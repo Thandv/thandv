@@ -122,7 +122,7 @@ def _stub_train(queue_file: Path) -> str:
     marker, later as the actual safetensors plus a manifest).
     """
     _ensure_dirs()
-    adapter_id = f"adapter-{int(time.time() * 1000)}"
+    adapter_id = f"adapter-{time.time_ns()}"
     (ADAPTERS_DIR / f"{adapter_id}.json").write_text(
         json.dumps(
             {
@@ -141,7 +141,7 @@ def _stub_train(queue_file: Path) -> str:
 
 def _log_outcome(outcome: dict) -> dict:
     _ensure_dirs()
-    log_path = LOGS_DIR / f"tick-{int(time.time() * 1000)}.json"
+    log_path = LOGS_DIR / f"tick-{time.time_ns()}.json"
     log_path.write_text(json.dumps(outcome, indent=2))
     return outcome
 

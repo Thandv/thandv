@@ -43,7 +43,7 @@ def load_memory() -> str:
 
 def new_session_path() -> Path:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return SESSIONS_DIR / f"{int(time.time())}.jsonl"
+    return SESSIONS_DIR / f"{time.time_ns()}.jsonl"
 
 
 def append_event(path: Path, event: dict) -> None:

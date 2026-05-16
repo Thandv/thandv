@@ -168,7 +168,7 @@ def _persist(suite_name: str, results: list[EvalResult], out_path: Path | None) 
     if out_path is None:
         out_dir = THANDV_HOME / "evals"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{suite_name}-{int(time.time())}.json"
+        out_path = out_dir / f"{suite_name}-{time.time_ns()}.json"
     out_path.write_text(json.dumps([asdict(r) for r in results], indent=2))
     return out_path
 
