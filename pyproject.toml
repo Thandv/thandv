@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thandv"
+version = "0.0.1"
+description = "A local, open-weights, Claude-style coding assistant."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Thandv" }]
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.6"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+thandv = "thandv.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["thandv*"]
+exclude = ["tests*", "research*", "cpp*", "skills*", "scripts*"]
