@@ -23,6 +23,7 @@ class Config:
     temperature: float = 0.2
     max_tokens: int = 4096
     auto_tools: bool = True
+    persona: str = "code"  # code | writer | finance
 
     @classmethod
     def load(cls) -> "Config":

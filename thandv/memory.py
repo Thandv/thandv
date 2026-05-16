@@ -14,12 +14,19 @@ from pathlib import Path
 from thandv.config import MEMORY_DIR, SESSIONS_DIR, SKILLS_DIR
 
 
-def load_skills() -> str:
-    """Concatenate every markdown file under ~/.thandv/skills/ into one block."""
+def load_skills(only: tuple[str, ...] | None = None) -> str:
+    """Concatenate skill markdown files into one block.
+
+    If `only` is given, load only those skill stems (e.g. ("coding-style",
+    "honesty")). If `only` is None, load every markdown file in the skills
+    directory.
+    """
     if not SKILLS_DIR.exists():
         return ""
     chunks: list[str] = []
     for md in sorted(SKILLS_DIR.glob("*.md")):
+        if only is not None and md.stem not in only:
+            continue
         chunks.append(f"# Skill: {md.stem}\n{md.read_text()}")
     return "\n\n".join(chunks)
 
