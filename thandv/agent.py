@@ -1,4 +1,4 @@
-"""Agent loop: chat with the local model, parse tool calls, feed results back."""
+"""Agent loop: stream chat from the local model, parse tool calls, feed results back."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from thandv.prompts import SYSTEM_PROMPT
 from thandv.tools import dispatch
 
 TOOL_BLOCK_RE = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
+TOOL_OPEN_MARKER = "```tool\n"
 MAX_TOOL_HOPS = 8
 
 
@@ -36,24 +37,37 @@ class Agent:
                 system += "\n\n## Memory\n" + memory
             self.messages.append({"role": "system", "content": system})
 
-    # --- Ollama I/O --------------------------------------------------------
+    # --- Ollama streaming I/O ----------------------------------------------
 
-    def _chat_once(self) -> str:
-        r = requests.post(
+    def _raw_stream(self) -> Iterator[str]:
+        """Yield content chunks from Ollama's /api/chat NDJSON stream."""
+        with requests.post(
             f"{OLLAMA_HOST}/api/chat",
             json={
                 "model": self.config.model,
                 "messages": self.messages,
-                "stream": False,
+                "stream": True,
                 "options": {
                     "temperature": self.config.temperature,
                     "num_predict": self.config.max_tokens,
                 },
             },
+            stream=True,
             timeout=600,
-        )
-        r.raise_for_status()
-        return r.json()["message"]["content"]
+        ) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                chunk = obj.get("message", {}).get("content", "")
+                if chunk:
+                    yield chunk
+                if obj.get("done"):
+                    return
 
     # --- Tool parsing ------------------------------------------------------
 
@@ -74,25 +88,49 @@ class Agent:
     # --- Public turn API ---------------------------------------------------
 
     def turn(self, user_input: str) -> Iterator[str]:
-        """Run one user turn; yields strings to print incrementally."""
+        """Run one user turn; yields output chunks incrementally.
+
+        Tool-block JSON is hidden from the stream — the user sees a one-line
+        `[tool] <name>(<args>)` summary instead. A small tail buffer ensures
+        the `TOOL_OPEN_MARKER` is detected even when it straddles two chunks.
+        """
         self.messages.append({"role": "user", "content": user_input})
         append_event(self.session_path, {"role": "user", "content": user_input})
 
-        for _ in range(MAX_TOOL_HOPS):
-            reply = self._chat_once()
-            self.messages.append({"role": "assistant", "content": reply})
-            append_event(self.session_path, {"role": "assistant", "content": reply})
+        hold = len(TOOL_OPEN_MARKER) - 1  # bytes to keep buffered for marker detection
 
-            call = self._extract_tool_call(reply)
+        for _ in range(MAX_TOOL_HOPS):
+            full = ""
+            pending = ""
+            in_tool_block = False
+
+            for chunk in self._raw_stream():
+                full += chunk
+                if in_tool_block:
+                    continue
+                pending += chunk
+                idx = pending.find(TOOL_OPEN_MARKER)
+                if idx >= 0:
+                    if idx > 0:
+                        yield pending[:idx]
+                    pending = ""
+                    in_tool_block = True
+                    continue
+                if len(pending) > hold:
+                    yield pending[:-hold]
+                    pending = pending[-hold:]
+
+            if not in_tool_block and pending:
+                yield pending
+
+            self.messages.append({"role": "assistant", "content": full})
+            append_event(self.session_path, {"role": "assistant", "content": full})
+
+            call = self._extract_tool_call(full)
             if call is None:
-                yield reply
                 return
 
-            visible = TOOL_BLOCK_RE.sub("", reply).strip()
-            if visible:
-                yield visible + "\n"
-            yield f"[tool] {call['name']}({json.dumps(call['args'])[:120]})\n"
-
+            yield f"\n[tool] {call['name']}({json.dumps(call['args'])[:120]})\n"
             result = dispatch(call["name"], call["args"])
             append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})
             self.messages.append(

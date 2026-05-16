@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thandv"
-version = "0.0.1"
+version = "0.1.0"
 description = "A local, open-weights, Claude-style coding assistant."
 readme = "README.md"
 license = { text = "MIT" }

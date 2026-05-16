@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 THANDV_HOME = Path(os.environ.get("THANDV_HOME", Path.home() / ".thandv"))

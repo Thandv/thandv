@@ -6,8 +6,6 @@ model's tool-call block and dispatching here.
 
 from __future__ import annotations
 
-import os
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Callable

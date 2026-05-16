@@ -13,7 +13,7 @@ Versioned milestones. Each milestone is small enough to land in a sitting.
 
 ## v0.1 — usability
 
-- [ ] Streaming output from Ollama (`stream=True`)
+- [x] Streaming output from Ollama (`stream=True`), tool blocks still hidden
 - [ ] Rich-text terminal UI (color, spinners, code highlighting)
 - [ ] `/commands` inside the REPL: `/reset`, `/save`, `/skills`, `/memory`
 - [ ] Native tool-call format (Qwen / Llama function-calling) instead of
