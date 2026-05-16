@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd template for the Thandv training daemon.
+
+  Install:
+    cp scripts/com.thandv.trainer.plist ~/Library/LaunchAgents/
+    # Then edit the two __HOME__ placeholders and __THANDV__ to point at
+    # your real home directory and the thandv binary.
+    launchctl load ~/Library/LaunchAgents/com.thandv.trainer.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.thandv.trainer.plist
+    rm ~/Library/LaunchAgents/com.thandv.trainer.plist
+
+  Notes:
+  - LowPriorityIO + Nice=10 keep the daemon out of the way of foreground work.
+  - StartInterval is in seconds. 600 = ten minutes between *launchd-driven*
+    relaunches if the process exits; the daemon itself ticks every 300s by
+    default (configurable via --interval on `thandv train run`).
+  - KeepAlive=true means launchd restarts the daemon if it crashes.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thandv.trainer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__THANDV__</string>
+        <string>train</string>
+        <string>run</string>
+        <string>--interval</string>
+        <string>300</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.thandv/training/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.thandv/training/logs/launchd.err.log</string>
+
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>

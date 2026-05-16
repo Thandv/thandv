@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 import requests
 
-from thandv import __version__
+from thandv import __version__, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
 from thandv.evals import EvalResult, list_suites, run_suite, summarise
@@ -148,6 +150,75 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if all(r.passed for r in results) else 1
 
 
+def cmd_train(args: argparse.Namespace) -> int:
+    cfg = Config.load()
+    if not cfg.model:
+        cfg.model = pick_model(detect_host())
+
+    action = args.train_action or "status"
+
+    if action == "status":
+        state = trainer.load_state()
+        print(f"running:               {trainer.is_running()}")
+        print(f"paused:                {state.paused}")
+        print(f"started_at:            {state.started_at or '—'}")
+        print(f"last_tick_at:          {state.last_tick_at or '—'}")
+        print(f"ticks_completed:       {state.ticks_completed}")
+        print(f"baseline_measured:     {state.baseline_measured}")
+        print(f"last_eval_pass_rate:   {state.last_eval_pass_rate:.3f}")
+        print(f"best_eval_pass_rate:   {state.best_eval_pass_rate:.3f}")
+        print(f"active_adapter:        {state.active_adapter or '—'}")
+        print(f"queue size:            {trainer.queue_size()}")
+        return 0
+
+    if action == "queue":
+        for p in sorted(trainer.QUEUE_DIR.glob("*.jsonl")):
+            with p.open() as f:
+                n = sum(1 for _ in f)
+            print(f"{p.name}\t{n} examples")
+        return 0
+
+    if action == "enqueue":
+        src = Path(args.path).expanduser()
+        if not src.exists():
+            print(f"not found: {src}", file=sys.stderr)
+            return 2
+        dst = trainer.enqueue_path(src)
+        print(f"queued: {dst.name}")
+        return 0
+
+    if action == "tick":
+        out = trainer.tick(cfg.model, dry_run=args.dry_run)
+        print(json.dumps(out, indent=2))
+        return 0
+
+    if action == "pause":
+        trainer.pause()
+        print("paused")
+        return 0
+
+    if action == "resume":
+        trainer.resume()
+        print("resumed")
+        return 0
+
+    if action == "stop":
+        if trainer.stop():
+            print("sent SIGTERM to running trainer")
+            return 0
+        print("no running trainer", file=sys.stderr)
+        return 1
+
+    if action == "run":
+        print(f"trainer starting (model={cfg.model}, interval={args.interval}s). Ctrl-C to stop.")
+        trainer.run_forever(cfg.model, interval_s=args.interval)
+        print("trainer stopped.")
+        return 0
+
+    print(f"unknown train action: {action}", file=sys.stderr)
+    return 2
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -192,6 +263,21 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--limit", type=int, help="max tasks to run")
     p_eval.add_argument("--list", action="store_true", help="list available suites and exit")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_train = sub.add_parser("train", help="manage the background training daemon")
+    train_sub = p_train.add_subparsers(dest="train_action")
+    train_sub.add_parser("status", help="show daemon + state (default action)")
+    train_sub.add_parser("queue", help="list queued example files")
+    p_enq = train_sub.add_parser("enqueue", help="add a JSONL file to the queue")
+    p_enq.add_argument("path", help="path to a .jsonl file of training examples")
+    p_tick = train_sub.add_parser("tick", help="run one train→eval→promote iteration now")
+    p_tick.add_argument("--dry-run", action="store_true", help="don't actually train")
+    train_sub.add_parser("pause", help="pause the daemon (it keeps running but skips ticks)")
+    train_sub.add_parser("resume", help="resume a paused daemon")
+    train_sub.add_parser("stop", help="send SIGTERM to a running daemon")
+    p_run = train_sub.add_parser("run", help="run the daemon in the foreground")
+    p_run.add_argument("--interval", type=int, default=300, help="seconds between ticks")
+    p_train.set_defaults(func=cmd_train)
 
     p_config = sub.add_parser("config", help="show or set config keys")
     p_config.add_argument("--set", action="append", help="key=value", default=[])

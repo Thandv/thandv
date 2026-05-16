@@ -1,0 +1,38 @@
+# systemd user service for the Thandv training daemon.
+#
+# Install (as your user, not root):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/thandv-trainer.service ~/.config/systemd/user/
+#   # Edit ExecStart if `thandv` is not on the default PATH systemd sees.
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now thandv-trainer.service
+#
+# Status / logs:
+#   systemctl --user status thandv-trainer.service
+#   journalctl --user -u thandv-trainer.service -f
+#
+# Stop:
+#   systemctl --user disable --now thandv-trainer.service
+#
+# Notes:
+# - `Nice=10` and `IOSchedulingPriority=7` keep the daemon out of the way of
+#   foreground work.
+# - Restart=always makes systemd bring it back up after crashes / reboots.
+
+[Unit]
+Description=Thandv background training daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/thandv train run --interval 300
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StandardOutput=append:%h/.thandv/training/logs/systemd.out.log
+StandardError=append:%h/.thandv/training/logs/systemd.err.log
+
+[Install]
+WantedBy=default.target
