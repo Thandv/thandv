@@ -93,12 +93,37 @@ Diagnostic snapshot. Reports:
 
 ### `thandv eval [SUITE] [--persona NAME] [--limit N] [--list]`
 
-Runs an eval suite against the current model + persona. Defaults to the
-`smoke` suite (3 tasks, no dataset download needed). Results land in
+Runs an eval suite against the current model + persona. Results land in
 `~/.thandv/evals/<suite>-<unix-ts>.json`.
 
 `--limit N` runs only the first N tasks. `--list` shows available suites
 and personas, then exits.
+
+Available suites:
+
+| Suite       | Tasks | Needs    | Notes |
+|-------------|------:|----------|-------|
+| `smoke`     | 3     | (none)   | Default. Arithmetic, string-reverse, `is_prime`. Runs in seconds. |
+| `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
+
+```bash
+thandv eval                              # smoke, 3 tasks
+thandv eval humaneval --limit 10         # quick HumanEval slice (~2 min on M2 7B)
+thandv eval humaneval                    # full HumanEval (~30 min on M2 7B)
+```
+
+**Baselines recorded so far** (informal; full runs land in the repo once
+they're stable):
+
+| Model                | Suite                  | Result    | Hardware |
+|----------------------|------------------------|-----------|----------|
+| `qwen2.5-coder:7b`   | `humaneval --limit 10` | 10/10 PASS | M2 16 GB |
+| `qwen2.5-coder:7b`   | `smoke`                | 3/3 PASS   | M2 16 GB |
+
+**Sandbox honesty.** The HumanEval verifier runs model-generated Python in
+a subprocess with a 10 s timeout. That's enough for research; do *not*
+run `thandv eval humaneval` against an untrusted model or in a shared
+environment. The model can write whatever Python it wants.
 
 ### `thandv ingest [PATH] [--persona NAME] [--stats] [--clear]`
 

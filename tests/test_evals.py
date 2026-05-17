@@ -193,3 +193,115 @@ def test_eval_dataclasses():
     assert result.passed
     # Smoke suite is registered with the expected name
     assert SUITES["smoke"].name == "smoke"
+
+
+# --- HumanEval --------------------------------------------------------------
+
+def test_humaneval_suite_registered():
+    suite = get_suite("humaneval")
+    assert suite.name == "humaneval"
+    assert suite.default_persona == "code"
+    # Tasks load lazily via `loader`; not populated until first run.
+    assert suite.loader is not None
+
+
+def test_extract_python_code_from_fenced_block():
+    reply = "Sure, here it is:\n```python\ndef f():\n    return 1\n```\nthanks"
+    assert eval_mod._extract_python_code(reply) == "def f():\n    return 1"
+
+
+def test_extract_python_code_from_unfenced_reply():
+    reply = "def f():\n    return 1"
+    assert eval_mod._extract_python_code(reply) == reply
+
+
+def test_extract_python_code_accepts_generic_fence():
+    reply = "```\ndef f():\n    return 1\n```"
+    assert eval_mod._extract_python_code(reply) == "def f():\n    return 1"
+
+
+def test_humaneval_verifier_passes_canonical_solution():
+    test_code = (
+        "def check(candidate):\n"
+        "    assert candidate(2) == 4\n"
+        "    assert candidate(3) == 6\n"
+    )
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    reply = "```python\ndef f(n):\n    return n * 2\n```"
+    assert verify(reply) is True
+
+
+def test_humaneval_verifier_rejects_wrong_solution():
+    test_code = (
+        "def check(candidate):\n"
+        "    assert candidate(2) == 4\n"
+    )
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    reply = "```python\ndef f(n):\n    return n + 1\n```"
+    assert verify(reply) is False
+
+
+def test_humaneval_verifier_rejects_syntax_error():
+    test_code = "def check(candidate):\n    pass\n"
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    reply = "```python\ndef f(:\n    return\n```"
+    assert verify(reply) is False
+
+
+def test_humaneval_verifier_rejects_missing_function():
+    test_code = "def check(candidate):\n    candidate(1)\n"
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    reply = "```python\ndef g(n):\n    return n\n```"  # wrong name
+    assert verify(reply) is False
+
+
+def test_humaneval_verifier_handles_timeout(monkeypatch):
+    monkeypatch.setattr(eval_mod, "HUMANEVAL_TIMEOUT_S", 1)
+    test_code = "def check(candidate):\n    candidate()\n"
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    reply = "```python\ndef f():\n    while True:\n        pass\n```"
+    assert verify(reply) is False
+
+
+def test_humaneval_loader_clear_error_without_datasets(monkeypatch):
+    """If `datasets` isn't installed, the loader raises a clear message."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "datasets":
+            raise ImportError("No module named 'datasets'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(RuntimeError, match=r"thandv\[eval\]"):
+        eval_mod._load_humaneval_tasks()
+
+
+def test_run_suite_invokes_lazy_loader(thandv_home, monkeypatch):
+    """A suite with a loader should populate tasks on first run."""
+    calls = {"n": 0}
+
+    def loader():
+        calls["n"] += 1
+        return [
+            EvalTask(id="lazy", prompt="hi", verify=lambda r: r == "ok"),
+        ]
+
+    lazy = EvalSuite(name="lazyfake", loader=loader)
+    monkeypatch.setitem(eval_mod.SUITES, "lazyfake", lazy)
+
+    class FA:
+        def __init__(self, *a, **kw):
+            self.session_path = type("P", (), {"name": "fake"})()
+
+        def turn(self, _):
+            yield "ok"
+
+    monkeypatch.setattr(eval_mod, "Agent", FA)
+
+    results = eval_mod.run_suite("lazyfake", model="m")
+    assert calls["n"] == 1
+    assert len(results) == 1
+    assert results[0].passed
