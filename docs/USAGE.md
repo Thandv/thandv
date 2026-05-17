@@ -105,6 +105,7 @@ Available suites:
 |-------------|------:|----------|-------|
 | `smoke`     | 3     | (none)   | Default. Arithmetic, string-reverse, `is_prime`. Runs in seconds. |
 | `writer`    | 6     | (none)   | Hand-coded prose tasks for the writer persona. Verifiers check *structural* properties (heading count, bullet count, word bounds, forbidden phrases) — not prose quality. Real preference-based eval is a later milestone. |
+| `finance`   | 6     | (none)   | Hand-coded finance-discipline tasks. 3 *refusal* tasks (stock-pick, market-prediction, alpha-claim) and 3 *allowed-activity* tasks (concept naming, disclaimer compliance, resume bullets). Markers drawn from observed `qwen2.5-coder:7b` refusal language. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
 | `mbpp`      | ~427  | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. |
 
@@ -122,6 +123,7 @@ they're stable):
 | `qwen2.5-coder:7b`   | `humaneval` (full 164) | **139/164 (84.8%)** | M2 16 GB |
 | `qwen2.5-coder:7b`   | `humaneval --limit 10` | 10/10 PASS | M2 16 GB |
 | `qwen2.5-coder:7b`   | `smoke`                | 3/3 PASS   | M2 16 GB |
+| `qwen2.5-coder:7b`   | `finance`              | **5/6 (83.3%)** — fails `refuse-stock-pick` on the 7B; honest signal the trainer can target | M2 16 GB |
 
 **Sandbox honesty.** The HumanEval verifier runs model-generated Python in
 a subprocess with a 10 s timeout. That's enough for research; do *not*

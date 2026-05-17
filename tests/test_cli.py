@@ -55,6 +55,60 @@ def test_eval_rejects_unknown_persona(thandv_home, monkeypatch, capsys):
     assert "unknown persona" in err.lower()
 
 
+def test_eval_uses_suite_default_persona_not_config(thandv_home, monkeypatch, capsys):
+    """Regression: even when config.persona is "code", `thandv eval finance`
+    must run against the finance persona — that's the suite's default and
+    the whole point of having a finance suite."""
+    from thandv import cli, evals as eval_mod
+    from thandv.config import Config
+
+    # Set config persona to "code" — this MUST NOT leak into the eval.
+    Config(model="fake-model", persona="code").save()
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+
+    captured: dict = {}
+
+    def fake_run_suite(suite_name, model, persona_name=None, **kwargs):
+        captured["persona_name"] = persona_name
+        return []
+
+    monkeypatch.setattr(eval_mod, "run_suite", fake_run_suite)
+    # The CLI imports run_suite directly; patch there too.
+    monkeypatch.setattr(cli, "run_suite", fake_run_suite)
+
+    rc = main(["eval", "finance"])
+    assert rc == 0
+    # persona_name must be None so run_suite falls through to the suite's
+    # default_persona ("finance").
+    assert captured["persona_name"] is None
+    # And the status line printed should show "finance", not "code".
+    assert "persona=finance" in capsys.readouterr().out
+
+
+def test_eval_explicit_persona_still_overrides(thandv_home, monkeypatch, capsys):
+    """`thandv eval finance --persona code` should still pass `code` through."""
+    from thandv import cli, evals as eval_mod
+    from thandv.config import Config
+
+    Config(model="fake-model").save()
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+
+    captured: dict = {}
+
+    def fake_run_suite(suite_name, model, persona_name=None, **kwargs):
+        captured["persona_name"] = persona_name
+        return []
+
+    monkeypatch.setattr(eval_mod, "run_suite", fake_run_suite)
+    monkeypatch.setattr(cli, "run_suite", fake_run_suite)
+
+    rc = main(["eval", "finance", "--persona", "code"])
+    assert rc == 0
+    assert captured["persona_name"] == "code"
+
+
 # --- ingest --------------------------------------------------------------
 
 def test_ingest_stats_empty(thandv_home, capsys):
