@@ -40,14 +40,20 @@ may use free internet sources of good quality.**
 
 ## v0.3 — local RAG + bundled corpus
 
-- [ ] Embedded vector DB (LanceDB — pure Python, fits PyInstaller cleanly)
-- [ ] Embeddings via Ollama's `nomic-embed-text` (local)
-- [ ] `thandv ingest <path>` command for user corpora
-- [ ] `retrieve` tool wired into the agent
+- [x] Pure-Python pipeline: paragraph-aware chunker + Ollama
+      `nomic-embed-text` embeddings + JSONL store + cosine similarity.
+      No new dependency; swap to a real vector DB later behind the same
+      API if scale demands it.
+- [x] Embeddings via Ollama's `nomic-embed-text` (local).
+      Install pulled automatically; `doctor` reports if missing.
+- [x] `thandv ingest <path> [--persona] [--stats] [--clear]` command.
+- [x] `retrieve` tool wired into the agent; Agent auto-injects the active
+      persona into args.
+- [x] Per-persona corpora: separate JSONL stores under
+      `~/.thandv/corpora/<persona>/`.
 - [ ] Bundled starter pack: Python stdlib docs, Unix man pages, common
-      library refs (curated, license-clean)
-- [ ] Per-persona corpora: `code/` (language refs), `writer/` (style
-      guides, public-domain literature), `finance/` (educational only)
+      library refs (curated, license-clean). Deferred to v0.3.x — bundling
+      a corpus inflates the repo and licensing requires careful curation.
 
 ## v0.4 — training pipeline scaffolding
 

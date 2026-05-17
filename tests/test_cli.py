@@ -55,6 +55,68 @@ def test_eval_rejects_unknown_persona(thandv_home, monkeypatch, capsys):
     assert "unknown persona" in err.lower()
 
 
+# --- ingest --------------------------------------------------------------
+
+def test_ingest_stats_empty(thandv_home, capsys):
+    rc = main(["ingest", "--stats"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "total_chunks" in out
+
+
+def test_ingest_clear_requires_persona(thandv_home, capsys):
+    rc = main(["ingest", "--clear"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--clear requires --persona" in err
+
+
+def test_ingest_no_args_errors(thandv_home, capsys):
+    rc = main(["ingest"])
+    assert rc == 2
+
+
+def test_ingest_unknown_path(thandv_home, capsys):
+    rc = main(["ingest", "/definitely/not/here"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not found" in err
+
+
+def test_ingest_unknown_persona(thandv_home, capsys):
+    rc = main(["ingest", "/tmp", "--persona", "astrology"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown persona" in err.lower()
+
+
+def test_ingest_requires_embed_model(thandv_home, monkeypatch, tmp_path, capsys):
+    from thandv import cli, rag
+
+    src = tmp_path / "doc.md"
+    src.write_text("hello")
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(rag, "embed_model_available", lambda: False)
+    rc = main(["ingest", str(src), "--persona", "code"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "embedding model" in err.lower()
+
+
+def test_ingest_happy_path(thandv_home, monkeypatch, tmp_path, capsys, fake_embed):
+    from thandv import cli, rag
+
+    src = tmp_path / "doc.md"
+    src.write_text("hello world\n\nsecond para")
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+    rc = main(["ingest", str(src), "--persona", "code"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "files=1" in out
+    assert "chunks=" in out
+
+
 def test_config_show_default(thandv_home, capsys):
     rc = main(["config"])
     assert rc == 0

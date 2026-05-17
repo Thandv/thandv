@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-from thandv import __version__, trainer
+from thandv import __version__, rag, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
 from thandv.evals import EvalResult, list_suites, run_suite, summarise
@@ -48,6 +48,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     print(f"persona:        {cfg.persona}")
     print(f"ollama running: {_check_ollama()}")
     print(f"model pulled:   {_ensure_model(model)}")
+    print(f"embed model:    {rag.EMBED_MODEL} ({'available' if rag.embed_model_available() else 'NOT pulled — run: ollama pull ' + rag.EMBED_MODEL})")
     print(f"thandv version: {__version__}")
     return 0
 
@@ -148,6 +149,53 @@ def cmd_eval(args: argparse.Namespace) -> int:
     print()
     print(summarise(results))
     return 0 if all(r.passed for r in results) else 1
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    ensure_dirs()
+
+    if args.stats:
+        persona = args.persona if args.persona and args.persona != "all" else None
+        stats = rag.corpus_stats(persona)
+        print(json.dumps(stats, indent=2))
+        return 0
+
+    if args.clear:
+        if not args.persona:
+            print("--clear requires --persona NAME", file=sys.stderr)
+            return 2
+        removed = rag.clear_corpus(args.persona)
+        print(f"cleared persona={args.persona} (removed={removed})")
+        return 0
+
+    if not args.path:
+        print("ingest requires a path, or --stats / --clear", file=sys.stderr)
+        return 2
+
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        print(f"not found: {src}", file=sys.stderr)
+        return 2
+
+    persona = args.persona or "all"
+    if persona != "all":
+        try:
+            get_persona(persona)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+
+    if not _check_ollama():
+        print("ollama is not running. Start it with: `ollama serve`", file=sys.stderr)
+        return 2
+    if not rag.embed_model_available():
+        print(f"embedding model `{rag.EMBED_MODEL}` not pulled. Run: ollama pull {rag.EMBED_MODEL}", file=sys.stderr)
+        return 2
+
+    print(f"ingesting {src} into persona={persona} ...")
+    files, chunks = rag.ingest_path(src, persona=persona)
+    print(f"done. files={files} chunks={chunks}")
+    return 0
 
 
 def cmd_train(args: argparse.Namespace) -> int:
@@ -263,6 +311,13 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--limit", type=int, help="max tasks to run")
     p_eval.add_argument("--list", action="store_true", help="list available suites and exit")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_ing = sub.add_parser("ingest", help="ingest a file or directory into a persona's corpus")
+    p_ing.add_argument("path", nargs="?", help="file or directory to ingest")
+    p_ing.add_argument("--persona", help="target persona corpus (default: 'all')")
+    p_ing.add_argument("--stats", action="store_true", help="show corpus stats and exit")
+    p_ing.add_argument("--clear", action="store_true", help="clear the persona's corpus (requires --persona)")
+    p_ing.set_defaults(func=cmd_ingest)
 
     p_train = sub.add_parser("train", help="manage the background training daemon")
     train_sub = p_train.add_subparsers(dest="train_action")

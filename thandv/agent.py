@@ -74,6 +74,16 @@ class Agent:
 
     # --- Tool parsing ------------------------------------------------------
 
+    def _inject_context(self, call: dict) -> None:
+        """Fill in tool args that depend on agent context.
+
+        Stateless tool dispatch can't know which persona's corpus to search,
+        so we inject it for the `retrieve` tool. The model can still override
+        by passing `persona="all"` or a specific name explicitly.
+        """
+        if call["name"] == "retrieve":
+            call["args"].setdefault("persona", self.persona.name if self.persona else "all")
+
     @staticmethod
     def _extract_tool_call(text: str) -> dict | None:
         m = TOOL_BLOCK_RE.search(text)
@@ -133,6 +143,7 @@ class Agent:
             if call is None:
                 return
 
+            self._inject_context(call)
             yield f"\n[tool] {call['name']}({json.dumps(call['args'])[:120]})\n"
             result = dispatch(call["name"], call["args"])
             append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})

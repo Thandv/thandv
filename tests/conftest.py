@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from thandv import config, memory, trainer
+from thandv import config, memory, rag, trainer
 
 
 @pytest.fixture
@@ -47,4 +47,28 @@ def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(trainer, "STATE_PATH", training / "state.json")
     monkeypatch.setattr(trainer, "PID_PATH", training / "trainer.pid")
 
+    corpora = home / "corpora"
+    corpora.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(rag, "CORPORA_DIR", corpora)
+
     return home
+
+
+@pytest.fixture
+def fake_embed(monkeypatch: pytest.MonkeyPatch):
+    """Replace `rag.embed` (and the rag.embed alias inside `tools`) with a
+    deterministic fake. Mapping tests use this to control the score order.
+    """
+    mapping: dict[str, list[float]] = {}
+
+    def _embed(text: str) -> list[float]:
+        if text in mapping:
+            return mapping[text]
+        # Default fallback: 1 in the slot derived from the first 4 chars.
+        v = [0.0] * rag.EMBED_DIM
+        idx = sum(ord(c) for c in text[:4]) % rag.EMBED_DIM
+        v[idx] = 1.0
+        return v
+
+    monkeypatch.setattr(rag, "embed", _embed)
+    return mapping

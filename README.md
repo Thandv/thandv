@@ -22,6 +22,10 @@ fine-tuning — without ever sending a token to a paid API.
   different system prompt + skill subset. Switch with `--persona`.
 - **Eval harness**: `thandv eval` runs pluggable suites against the active
   model and persona, with results persisted under `~/.thandv/evals/`.
+- **Local RAG**: `thandv ingest <path>` chunks your files, embeds them via
+  Ollama's `nomic-embed-text`, and stores per-persona corpora under
+  `~/.thandv/corpora/`. The agent can call a `retrieve` tool that's
+  auto-scoped to the active persona. Pure-Python, no new deps.
 - **Background training daemon**: `thandv train run` reads from a local
   queue, runs an eval-gated training cycle, and only promotes a new
   adapter if it beats the current best on the chosen suite. Pause,
@@ -77,6 +81,7 @@ thandv/                 core Python package
   personas.py           code / writer / finance persona definitions
   evals.py              eval harness (smoke suite included)
   trainer.py            background training daemon (queue, eval-gate, state)
+  rag.py                chunking, embeddings, per-persona corpora, retrieve
   runtime.py            host detection + model ladder
   tools.py              read_file, write_file, edit_file, list_dir, run_bash
   memory.py             skills + memory + session log

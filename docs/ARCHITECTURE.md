@@ -54,7 +54,8 @@ thandv/
 ├── tools.py        local tool implementations + dispatch()
 ├── memory.py       skills loader (persona-filtered), memory loader, session logger
 ├── evals.py        EvalTask/EvalSuite/EvalResult, smoke suite, run_suite()
-└── trainer.py      daemon scaffold: queue, tick, eval-gate, state, pause/resume
+├── trainer.py      daemon scaffold: queue, tick, eval-gate, state, pause/resume
+└── rag.py          chunking, embedding (Ollama nomic-embed-text), per-persona JSONL store, retrieve
 ```
 
 ## Key design decisions
@@ -95,7 +96,20 @@ Everything important the daemon does is reflected in
 `~/.thandv/training/logs/`. Crash recovery is "read the JSON, resume".
 There is no in-memory state of interest.
 
-### 6. Tools are sandboxed-by-convention, not by mechanism
+### 6. RAG without a vector DB
+
+`thandv/rag.py` does retrieval with a pure-Python pipeline: paragraph-aware
+chunker, Ollama `nomic-embed-text` for embeddings, JSONL store under
+`~/.thandv/corpora/<persona>/chunks.jsonl`, cosine similarity computed in
+pure Python. No `numpy`, no `lancedb`, no `chromadb`. This stays fast
+enough up to ~50k chunks per persona (~100 ms / retrieve). When we outgrow
+it, the same `ingest_text` / `retrieve` API hides the storage swap.
+
+The agent auto-injects the active persona into the `retrieve` tool's args
+so the model doesn't need to know its own name; the model can override
+with `persona="all"` to search across every corpus.
+
+### 7. Tools are sandboxed-by-convention, not by mechanism
 
 `run_bash` refuses commands containing `rm -rf`, `mkfs`, `:(){:|`,
 `shutdown`, `reboot` unless the caller passes `confirm=True`. That's a
@@ -111,6 +125,7 @@ HTTP surface, don't trust untrusted skill markdown.
 | `edit_file`  | `path`, `old`, `new`                       | Single-occurrence replace; errors if `old` is non-unique. |
 | `list_dir`   | `path`                                     | Lists entries with `type ∈ {file, dir}`. |
 | `run_bash`   | `command`, `confirm` (optional)            | 30-second timeout, captures stdout/stderr (tail-truncated). |
+| `retrieve`   | `query`, `persona` (auto), `k` (1–20)      | Top-k chunks from the active persona's corpus by cosine similarity. Agent auto-fills `persona`. |
 
 Tools live in [`thandv/tools.py`](../thandv/tools.py); dispatcher is
 `dispatch(name, args)`.

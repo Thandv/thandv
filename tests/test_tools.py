@@ -1,6 +1,6 @@
 
 from thandv import tools
-from thandv.tools import dispatch, edit_file, list_dir, read_file, run_bash, write_file
+from thandv.tools import dispatch, edit_file, list_dir, read_file, retrieve, run_bash, write_file
 
 
 def test_read_file_ok(tmp_path):
@@ -128,3 +128,59 @@ def test_dispatch_routes_to_tool(tmp_path):
     p.write_text("hi")
     out = dispatch("read_file", {"path": str(p)})
     assert out["content"] == "hi"
+
+
+# --- retrieve tool ---------------------------------------------------------
+
+def test_retrieve_tool_returns_results(thandv_home, fake_embed):
+    from thandv.rag import ingest_text
+
+    ingest_text("hello world", source="h.md", persona="code")
+    out = retrieve("hello", persona="code", k=3)
+    assert "error" not in out
+    assert out["persona"] == "code"
+    assert out["k"] == 3
+    assert len(out["results"]) == 1
+    assert out["results"][0]["text"] == "hello world"
+
+
+def test_retrieve_tool_empty_corpus(thandv_home, fake_embed):
+    out = retrieve("anything", persona="code", k=5)
+    assert out["results"] == []
+
+
+def test_retrieve_tool_validates_query():
+    assert "error" in retrieve("", persona="code")
+    assert "error" in retrieve("   ", persona="code")
+
+
+def test_retrieve_tool_validates_k():
+    assert "error" in retrieve("q", persona="code", k=0)
+    assert "error" in retrieve("q", persona="code", k=999)
+    assert "error" in retrieve("q", persona="code", k="not-an-int")
+
+
+def test_retrieve_tool_propagates_embed_failure(thandv_home, fake_embed, monkeypatch):
+    from thandv import rag
+    from thandv.rag import ingest_text
+
+    # Ingest with a working embedder, then break it before the retrieve call
+    # so we actually exercise the query-time embed failure path.
+    ingest_text("alpha", source="a.md", persona="code")
+
+    def boom(text):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(rag, "embed", boom)
+    out = retrieve("anything", persona="code", k=3)
+    assert "error" in out
+    assert "ollama" in out["error"]
+
+
+def test_dispatch_retrieve(thandv_home, fake_embed):
+    from thandv.rag import ingest_text
+
+    ingest_text("alpha", source="a.md", persona="code")
+    out = dispatch("retrieve", {"query": "alpha", "persona": "code", "k": 1})
+    assert "error" not in out
+    assert out["results"][0]["text"] == "alpha"

@@ -154,6 +154,49 @@ def test_agent_explicit_persona_overrides_config(thandv_home, monkeypatch):
     assert "not investment advice" in agent.messages[0]["content"].lower()
 
 
+def test_agent_injects_persona_into_retrieve(thandv_home, monkeypatch):
+    """When the model emits a retrieve tool call without an explicit persona,
+    the agent fills in the active persona before dispatch."""
+    from thandv import tools
+
+    captured: dict = {}
+
+    def fake_retrieve(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setitem(tools.TOOLS, "retrieve", fake_retrieve)
+
+    replies = [
+        '```tool\n{"name": "retrieve", "args": {"query": "x", "k": 3}}\n```',
+        "ok",
+    ]
+    agent = _agent(thandv_home, monkeypatch, replies)
+    list(agent.turn("look it up"))
+    assert captured["persona"] == "code"
+    assert captured["query"] == "x"
+
+
+def test_agent_retrieve_persona_override_respected(thandv_home, monkeypatch):
+    from thandv import tools
+
+    captured: dict = {}
+
+    def fake_retrieve(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setitem(tools.TOOLS, "retrieve", fake_retrieve)
+
+    replies = [
+        '```tool\n{"name": "retrieve", "args": {"query": "x", "persona": "all", "k": 2}}\n```',
+        "ok",
+    ]
+    agent = _agent(thandv_home, monkeypatch, replies)
+    list(agent.turn("look across all"))
+    assert captured["persona"] == "all"
+
+
 # --- streaming behaviour ----------------------------------------------------
 
 def test_turn_streams_chunks_in_order(thandv_home, monkeypatch):
