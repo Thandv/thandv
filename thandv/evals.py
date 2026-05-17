@@ -117,6 +117,139 @@ SMOKE = EvalSuite(
 SUITES: dict[str, EvalSuite] = {SMOKE.name: SMOKE}
 
 
+# --- Writer suite verifiers ------------------------------------------------
+# These check structural / formal properties (counts, presence, absence) —
+# *not* quality. Prose quality needs human or preference-based eval; we
+# don't fake that. Each task's verifier is documented with the heuristic.
+
+def _exact_n_markdown_h2(n: int) -> Callable[[str], bool]:
+    """Reply has exactly `n` lines starting with `## ` and nothing else.
+
+    Permissive about leading/trailing whitespace and blank lines between
+    headings; strict on the heading count.
+    """
+    def check(reply: str) -> bool:
+        h2_lines = [line for line in reply.splitlines() if line.strip().startswith("## ")]
+        return len(h2_lines) == n
+    return check
+
+
+def _exact_n_comma_words(n: int) -> Callable[[str], bool]:
+    """Reply is exactly `n` comma-separated tokens, no trailing punctuation
+    other than commas in between.
+    """
+    def check(reply: str) -> bool:
+        stripped = reply.strip().rstrip(".")
+        # We only care about the structure; if the model added prose around
+        # the list, that's a fail.
+        parts = [p.strip() for p in stripped.split(",")]
+        return len(parts) == n and all(p and " " not in p.strip() for p in parts)
+    return check
+
+
+def _exact_n_bullets(n: int) -> Callable[[str], bool]:
+    """Reply has exactly `n` lines that start with `- ` (markdown bullet)."""
+    def check(reply: str) -> bool:
+        bullets = [line for line in reply.splitlines() if line.strip().startswith("- ")]
+        return len(bullets) == n
+    return check
+
+
+def _one_sentence_under_words(max_words: int) -> Callable[[str], bool]:
+    """Reply is exactly one sentence (single terminal `.`) under `max_words`
+    words.
+
+    Heuristic: count `.` plus `!` plus `?`; require exactly one. Word count
+    splits on whitespace.
+    """
+    def check(reply: str) -> bool:
+        stripped = reply.strip()
+        if not stripped:
+            return False
+        terminators = stripped.count(".") + stripped.count("!") + stripped.count("?")
+        if terminators != 1:
+            return False
+        words = stripped.split()
+        return 1 <= len(words) <= max_words
+    return check
+
+
+def _forbidden_phrases(phrases: tuple[str, ...]) -> Callable[[str], bool]:
+    """Reply must not contain any of the forbidden phrases (case-insensitive)."""
+    lowered = tuple(p.lower() for p in phrases)
+
+    def check(reply: str) -> bool:
+        r = reply.lower()
+        return not any(p in r for p in lowered)
+    return check
+
+
+WRITER = EvalSuite(
+    name="writer",
+    default_persona="writer",
+    tasks=[
+        EvalTask(
+            id="outline-3-sections",
+            prompt=(
+                "Outline an essay on focus. Use exactly three markdown "
+                "headings written as `## Section Title`. Reply with ONLY "
+                "the three heading lines — no introduction, no body text."
+            ),
+            verify=_exact_n_markdown_h2(3),
+        ),
+        EvalTask(
+            id="five-walk-verbs",
+            prompt=(
+                "List exactly five strong verbs that mean 'to walk'. "
+                "Reply as a single line of five comma-separated words. "
+                "No bullets, no introduction, no period at the end."
+            ),
+            verify=_exact_n_comma_words(5),
+        ),
+        EvalTask(
+            id="five-reasons-bullets",
+            prompt=(
+                "List exactly five reasons to take a daily walk. Use "
+                "markdown bullets (`- `). Reply with ONLY the five bullet "
+                "lines — no introduction or summary."
+            ),
+            verify=_exact_n_bullets(5),
+        ),
+        EvalTask(
+            id="one-sentence-summary",
+            prompt=(
+                "Summarise the following in ONE sentence of at most 25 words, "
+                "ending with a period. Reply with ONLY the summary sentence:\n\n"
+                "The quick brown fox jumped over the lazy dog beside a slow "
+                "river while the farmer watched silently from his porch."
+            ),
+            verify=_one_sentence_under_words(25),
+        ),
+        EvalTask(
+            id="opinion-no-hedges",
+            prompt=(
+                "Write a one-sentence opinion about morning routines. Do NOT "
+                "use the phrases 'I think', 'in my opinion', or 'I believe'. "
+                "Reply with ONLY the sentence."
+            ),
+            verify=_forbidden_phrases(("i think", "in my opinion", "i believe")),
+        ),
+        EvalTask(
+            id="sunset-no-cliche",
+            prompt=(
+                "Describe a sunset in one sentence. Do NOT use the words "
+                "'beautiful', 'amazing', 'breathtaking', or 'stunning'. "
+                "Reply with ONLY the sentence."
+            ),
+            verify=_forbidden_phrases(
+                ("beautiful", "amazing", "breathtaking", "stunning")
+            ),
+        ),
+    ],
+)
+SUITES[WRITER.name] = WRITER
+
+
 # --- HumanEval ------------------------------------------------------------
 
 HUMANEVAL_DATASET_DIR = THANDV_HOME / "datasets" / "humaneval"

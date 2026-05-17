@@ -41,7 +41,10 @@ may use free internet sources of good quality.**
       timeout. Baseline on `qwen2.5-coder:7b` first 10 tasks: 10/10 PASS.
 - [ ] MBPP integration (next; same pattern as HumanEval).
 - [ ] Small in-repo SWE-Bench-lite
-- [ ] Writer + finance eval suites (preference-based and finance-discipline)
+- [x] Writer eval suite: 6 hand-coded prose tasks with *structural*
+      heuristic verifiers (heading count, bullet count, sentence bounds,
+      forbidden phrases). Not preference-based — that's a later milestone.
+- [ ] Finance eval suite (finance-discipline checks)
 - [ ] Regression tracking across model + prompt versions
 
 ## v0.3 — local RAG + bundled corpus

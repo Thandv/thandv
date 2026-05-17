@@ -104,6 +104,7 @@ Available suites:
 | Suite       | Tasks | Needs    | Notes |
 |-------------|------:|----------|-------|
 | `smoke`     | 3     | (none)   | Default. Arithmetic, string-reverse, `is_prime`. Runs in seconds. |
+| `writer`    | 6     | (none)   | Hand-coded prose tasks for the writer persona. Verifiers check *structural* properties (heading count, bullet count, word bounds, forbidden phrases) — not prose quality. Real preference-based eval is a later milestone. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
 
 ```bash

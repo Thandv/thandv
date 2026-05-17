@@ -195,6 +195,106 @@ def test_eval_dataclasses():
     assert SUITES["smoke"].name == "smoke"
 
 
+# --- Writer suite ---------------------------------------------------------
+
+def test_writer_suite_registered():
+    suite = get_suite("writer")
+    assert suite.name == "writer"
+    assert suite.default_persona == "writer"
+    assert len(suite.tasks) == 6
+    for t in suite.tasks:
+        assert t.id and t.prompt and callable(t.verify)
+
+
+def test_outline_3_sections_accepts_exactly_three_h2():
+    task = next(t for t in get_suite("writer").tasks if t.id == "outline-3-sections")
+    good = "## Intro\n## Body\n## Closing"
+    assert task.verify(good) is True
+
+
+def test_outline_3_sections_rejects_wrong_count():
+    task = next(t for t in get_suite("writer").tasks if t.id == "outline-3-sections")
+    assert task.verify("## One\n## Two") is False
+    assert task.verify("## One\n## Two\n## Three\n## Four") is False
+    assert task.verify("# Title\n## One\n## Two") is False  # only 2 h2
+
+
+def test_outline_3_sections_ignores_blank_lines():
+    task = next(t for t in get_suite("writer").tasks if t.id == "outline-3-sections")
+    assert task.verify("## A\n\n## B\n\n## C") is True
+
+
+def test_five_walk_verbs_accepts_five_csv():
+    task = next(t for t in get_suite("writer").tasks if t.id == "five-walk-verbs")
+    assert task.verify("stride, march, saunter, amble, trudge") is True
+
+
+def test_five_walk_verbs_rejects_wrong_count():
+    task = next(t for t in get_suite("writer").tasks if t.id == "five-walk-verbs")
+    assert task.verify("stride, march, saunter") is False  # 3
+    assert task.verify("a, b, c, d, e, f") is False  # 6
+
+
+def test_five_walk_verbs_rejects_prose():
+    task = next(t for t in get_suite("writer").tasks if t.id == "five-walk-verbs")
+    assert task.verify("Here are five: stride, march, saunter, amble, trudge") is False
+
+
+def test_five_reasons_bullets_accepts_exactly_five():
+    task = next(t for t in get_suite("writer").tasks if t.id == "five-reasons-bullets")
+    good = "- one\n- two\n- three\n- four\n- five"
+    assert task.verify(good) is True
+
+
+def test_five_reasons_bullets_rejects_wrong_count():
+    task = next(t for t in get_suite("writer").tasks if t.id == "five-reasons-bullets")
+    assert task.verify("- one\n- two") is False
+    assert task.verify("- a\n- b\n- c\n- d\n- e\n- f") is False
+
+
+def test_one_sentence_summary_accepts():
+    task = next(t for t in get_suite("writer").tasks if t.id == "one-sentence-summary")
+    assert task.verify("A fox jumped over a dog while a farmer watched.") is True
+
+
+def test_one_sentence_summary_rejects_two_sentences():
+    task = next(t for t in get_suite("writer").tasks if t.id == "one-sentence-summary")
+    assert task.verify("A fox jumped. A farmer watched.") is False
+
+
+def test_one_sentence_summary_rejects_too_long():
+    task = next(t for t in get_suite("writer").tasks if t.id == "one-sentence-summary")
+    long_sentence = " ".join(["word"] * 30) + "."
+    assert task.verify(long_sentence) is False
+
+
+def test_opinion_no_hedges_accepts():
+    task = next(t for t in get_suite("writer").tasks if t.id == "opinion-no-hedges")
+    assert task.verify("Morning routines build the discipline that the rest of the day rides on.") is True
+
+
+def test_opinion_no_hedges_rejects_forbidden_phrases():
+    task = next(t for t in get_suite("writer").tasks if t.id == "opinion-no-hedges")
+    assert task.verify("I think morning routines matter.") is False
+    assert task.verify("In my opinion they help.") is False
+    assert task.verify("I believe in routines.") is False
+    # Case-insensitive
+    assert task.verify("I THINK they matter.") is False
+
+
+def test_sunset_no_cliche_accepts():
+    task = next(t for t in get_suite("writer").tasks if t.id == "sunset-no-cliche")
+    assert task.verify("The sun bled orange across the salt flats and was gone.") is True
+
+
+def test_sunset_no_cliche_rejects_each_forbidden_word():
+    task = next(t for t in get_suite("writer").tasks if t.id == "sunset-no-cliche")
+    assert task.verify("A beautiful sunset over the hills.") is False
+    assert task.verify("An amazing sunset over the hills.") is False
+    assert task.verify("A breathtaking sunset over the hills.") is False
+    assert task.verify("A stunning sunset over the hills.") is False
+
+
 # --- HumanEval --------------------------------------------------------------
 
 def test_humaneval_suite_registered():
