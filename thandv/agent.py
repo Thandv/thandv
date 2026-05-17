@@ -12,7 +12,7 @@ import requests
 
 from thandv.config import OLLAMA_HOST, Config
 from thandv.memory import append_event, load_memory, load_skills, new_session_path
-from thandv.prompts import SYSTEM_PROMPT
+from thandv.personas import Persona, get_persona
 from thandv.tools import dispatch
 
 TOOL_BLOCK_RE = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
@@ -23,13 +23,16 @@ MAX_TOOL_HOPS = 8
 @dataclass
 class Agent:
     config: Config
+    persona: Persona | None = None
     messages: list[dict] = field(default_factory=list)
     session_path: Path = field(default_factory=new_session_path)
 
     def __post_init__(self) -> None:
+        if self.persona is None:
+            self.persona = get_persona(self.config.persona)
         if not self.messages:
-            system = SYSTEM_PROMPT
-            skills = load_skills()
+            system = self.persona.system_prompt
+            skills = load_skills(only=self.persona.skills)
             memory = load_memory()
             if skills:
                 system += "\n\n## Skills\n" + skills

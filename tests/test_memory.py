@@ -26,6 +26,22 @@ def test_load_skills_ignores_non_md(thandv_home):
     assert "ignore me" not in out
 
 
+def test_load_skills_filters_by_only(thandv_home):
+    skills_dir = thandv_home / "skills"
+    (skills_dir / "alpha.md").write_text("alpha-body")
+    (skills_dir / "beta.md").write_text("beta-body")
+    (skills_dir / "gamma.md").write_text("gamma-body")
+    out = load_skills(only=("alpha", "gamma"))
+    assert "alpha-body" in out
+    assert "gamma-body" in out
+    assert "beta-body" not in out
+
+
+def test_load_skills_only_empty_loads_nothing(thandv_home):
+    (thandv_home / "skills" / "x.md").write_text("anything")
+    assert load_skills(only=()) == ""
+
+
 def test_load_memory(thandv_home):
     mem_dir = thandv_home / "memory"
     (mem_dir / "fact.md").write_text("the sky is blue\n")

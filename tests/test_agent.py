@@ -119,13 +119,39 @@ def test_turn_hop_budget(thandv_home, monkeypatch):
     assert "tool-call budget exhausted" in out
 
 
-def test_system_prompt_includes_skills_and_memory(thandv_home, monkeypatch):
-    (thandv_home / "skills" / "rule.md").write_text("be terse")
+def test_system_prompt_includes_persona_skills_and_memory(thandv_home, monkeypatch):
+    # The code persona requires the "coding-style" skill, so writing it here
+    # ensures it gets loaded into the system prompt. A skill not listed in
+    # the persona should be filtered out.
+    (thandv_home / "skills" / "coding-style.md").write_text("be terse")
+    (thandv_home / "skills" / "off-topic.md").write_text("ignore me")
     (thandv_home / "memory" / "fact.md").write_text("user likes python")
     agent = _agent(thandv_home, monkeypatch, ["k"])
     system = agent.messages[0]["content"]
     assert "be terse" in system
+    assert "ignore me" not in system
     assert "user likes python" in system
+    # Persona-specific prompt content
+    assert "code persona" in system.lower() or "coding assistant" in system.lower()
+
+
+def test_agent_uses_persona_from_config(thandv_home, monkeypatch):
+    cfg = Config(model="fake-model", persona="writer")
+    agent = Agent(config=cfg)
+    monkeypatch.setattr(agent, "_raw_stream", lambda: iter(["ok"]))
+    assert agent.persona.name == "writer"
+    assert "writer persona" in agent.messages[0]["content"].lower()
+
+
+def test_agent_explicit_persona_overrides_config(thandv_home, monkeypatch):
+    from thandv.personas import get_persona
+
+    cfg = Config(model="fake-model", persona="code")
+    agent = Agent(config=cfg, persona=get_persona("finance"))
+    monkeypatch.setattr(agent, "_raw_stream", lambda: iter(["ok"]))
+    assert agent.persona.name == "finance"
+    assert "finance persona" in agent.messages[0]["content"].lower()
+    assert "not investment advice" in agent.messages[0]["content"].lower()
 
 
 # --- streaming behaviour ----------------------------------------------------

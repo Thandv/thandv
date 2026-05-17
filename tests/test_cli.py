@@ -20,6 +20,39 @@ def test_help_flag(capsys):
     assert "thandv" in out.lower()
     assert "chat" in out
     assert "doctor" in out
+    assert "eval" in out
+
+
+def test_eval_list(thandv_home, capsys):
+    rc = main(["eval", "--list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "smoke" in out
+    assert "code" in out
+    assert "writer" in out
+    assert "finance" in out
+
+
+def test_chat_rejects_unknown_persona(thandv_home, monkeypatch, capsys):
+    from thandv import cli
+
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+    rc = main(["chat", "--persona", "astrology", "hi"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown persona" in err.lower()
+
+
+def test_eval_rejects_unknown_persona(thandv_home, monkeypatch, capsys):
+    from thandv import cli
+
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+    rc = main(["eval", "smoke", "--persona", "astrology"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown persona" in err.lower()
 
 
 def test_config_show_default(thandv_home, capsys):
@@ -28,6 +61,7 @@ def test_config_show_default(thandv_home, capsys):
     out = capsys.readouterr().out
     assert "model=" in out
     assert "backend=ollama" in out
+    assert "persona=code" in out
 
 
 def test_config_set_persists(thandv_home, capsys):

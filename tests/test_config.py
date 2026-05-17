@@ -9,16 +9,24 @@ def test_default_values():
     assert 0.0 <= c.temperature <= 1.0
     assert c.max_tokens > 0
     assert c.auto_tools is True
+    assert c.persona == "code"
 
 
 def test_save_load_roundtrip(thandv_home):
-    c = Config(model="qwen3:8b", temperature=0.5, max_tokens=512, auto_tools=False)
+    c = Config(
+        model="qwen3:8b",
+        temperature=0.5,
+        max_tokens=512,
+        auto_tools=False,
+        persona="writer",
+    )
     c.save()
     loaded = Config.load()
     assert loaded.model == "qwen3:8b"
     assert loaded.temperature == 0.5
     assert loaded.max_tokens == 512
     assert loaded.auto_tools is False
+    assert loaded.persona == "writer"
 
 
 def test_load_returns_default_when_no_file(thandv_home):
