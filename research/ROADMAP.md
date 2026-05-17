@@ -45,7 +45,10 @@ may use free internet sources of good quality.**
 - [x] Writer eval suite: 6 hand-coded prose tasks with *structural*
       heuristic verifiers (heading count, bullet count, sentence bounds,
       forbidden phrases). Not preference-based — that's a later milestone.
-- [ ] Finance eval suite (finance-discipline checks)
+- [x] Finance eval suite: 6 hand-coded tasks. 3 refusal tasks
+      (stock-pick, market-prediction, alpha-claim) + 3 allowed-activity
+      tasks (concept name, disclaimer compliance, resume bullets).
+      Refusal markers drawn from observed `qwen2.5-coder:7b` behaviour.
 - [ ] Regression tracking across model + prompt versions
 
 ## v0.3 — local RAG + bundled corpus

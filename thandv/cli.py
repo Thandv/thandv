@@ -12,7 +12,7 @@ import requests
 from thandv import __version__, rag, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
-from thandv.evals import EvalResult, list_suites, run_suite, summarise
+from thandv.evals import EvalResult, get_suite, list_suites, run_suite, summarise
 from thandv.personas import get_persona, list_personas
 from thandv.runtime import describe, detect_host, pick_model
 
@@ -115,11 +115,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if not cfg.model:
         cfg.model = pick_model(detect_host())
 
-    try:
-        persona_name = _resolve_persona(cfg, args.persona)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        return 2
+    # For eval, the *suite's* default_persona is authoritative when the
+    # user hasn't explicitly passed --persona. Falling back to cfg.persona
+    # ("code") would mean running the finance suite under the code
+    # persona, which silently invalidates the eval.
+    persona_name = args.persona
+    if persona_name is not None:
+        try:
+            get_persona(persona_name)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
 
     if not _check_ollama():
         print("ollama is not running. Start it with: `ollama serve`", file=sys.stderr)
@@ -128,7 +134,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"model `{cfg.model}` not pulled. Run: `ollama pull {cfg.model}`", file=sys.stderr)
         return 2
 
-    print(f"eval suite={args.suite!r} model={cfg.model} persona={persona_name}")
+    # Compute the effective persona for the status line.
+    try:
+        effective_persona = persona_name or get_suite(args.suite).default_persona
+    except ValueError:
+        effective_persona = persona_name or "?"
+    print(f"eval suite={args.suite!r} model={cfg.model} persona={effective_persona}")
 
     def progress(i: int, total: int, r: EvalResult) -> None:
         status = "PASS" if r.passed else "FAIL"
