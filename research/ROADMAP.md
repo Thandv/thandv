@@ -42,7 +42,10 @@ may use free internet sources of good quality.**
 - [x] MBPP integration: same pattern as HumanEval, sanitized config,
       `test_list`-based verifier. Full baseline not yet recorded (slow).
 - [ ] Small in-repo SWE-Bench-lite
-- [ ] Writer + finance eval suites (preference-based and finance-discipline)
+- [x] Writer eval suite: 6 hand-coded prose tasks with *structural*
+      heuristic verifiers (heading count, bullet count, sentence bounds,
+      forbidden phrases). Not preference-based — that's a later milestone.
+- [ ] Finance eval suite (finance-discipline checks)
 - [ ] Regression tracking across model + prompt versions
 
 ## v0.3 — local RAG + bundled corpus
