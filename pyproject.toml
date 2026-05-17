@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 build = ["pyinstaller>=6.6"]
 dev = ["pytest>=8", "ruff>=0.5"]
+eval = ["datasets>=2.18"]
 
 [project.scripts]
 thandv = "thandv.cli:main"

@@ -22,6 +22,8 @@ fine-tuning — without ever sending a token to a paid API.
   different system prompt + skill subset. Switch with `--persona`.
 - **Eval harness**: `thandv eval` runs pluggable suites against the active
   model and persona, with results persisted under `~/.thandv/evals/`.
+  Ships with `smoke` (3 fast tasks, no deps) and `humaneval` (164 tasks,
+  optional `datasets` install, subprocess-sandboxed verifier).
 - **Local RAG**: `thandv ingest <path>` chunks your files, embeds them via
   Ollama's `nomic-embed-text`, and stores per-persona corpora under
   `~/.thandv/corpora/`. The agent can call a `retrieve` tool that's

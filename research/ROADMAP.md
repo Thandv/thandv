@@ -36,7 +36,10 @@ may use free internet sources of good quality.**
       dataset download
 - [x] `thandv eval [suite] [--persona] [--limit] [--list]` command
 - [x] Results persisted to `~/.thandv/evals/`
-- [ ] Real HumanEval and MBPP integrations (download via `datasets`)
+- [x] Real HumanEval integration: lazy `datasets` import, ~300 KB cached
+      to `~/.thandv/datasets/`, subprocess-sandboxed verifier with
+      timeout. Baseline on `qwen2.5-coder:7b` first 10 tasks: 10/10 PASS.
+- [ ] MBPP integration (next; same pattern as HumanEval).
 - [ ] Small in-repo SWE-Bench-lite
 - [ ] Writer + finance eval suites (preference-based and finance-discipline)
 - [ ] Regression tracking across model + prompt versions
