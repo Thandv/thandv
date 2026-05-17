@@ -279,6 +279,81 @@ def test_humaneval_loader_clear_error_without_datasets(monkeypatch):
         eval_mod._load_humaneval_tasks()
 
 
+# --- MBPP -----------------------------------------------------------------
+
+def test_mbpp_suite_registered():
+    suite = get_suite("mbpp")
+    assert suite.name == "mbpp"
+    assert suite.default_persona == "code"
+    assert suite.loader is not None
+
+
+def test_mbpp_verifier_passes_canonical():
+    test_list = [
+        "assert is_even(2) == True",
+        "assert is_even(3) == False",
+    ]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef is_even(n):\n    return n % 2 == 0\n```"
+    assert verify(reply) is True
+
+
+def test_mbpp_verifier_rejects_wrong_answer():
+    test_list = ["assert add(2, 3) == 5"]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef add(a, b):\n    return a - b\n```"
+    assert verify(reply) is False
+
+
+def test_mbpp_verifier_rejects_syntax_error():
+    test_list = ["assert f(1) == 1"]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef f(:\n    return 1\n```"
+    assert verify(reply) is False
+
+
+def test_mbpp_verifier_rejects_missing_function():
+    test_list = ["assert thing(1) == 1"]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef other(n):\n    return n\n```"
+    assert verify(reply) is False
+
+
+def test_mbpp_verifier_runs_all_assertions():
+    """A solution that satisfies the first assertion but not the second
+    must still fail."""
+    test_list = [
+        "assert is_positive(1) == True",
+        "assert is_positive(-1) == False",
+    ]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef is_positive(n):\n    return True\n```"  # wrong on n=-1
+    assert verify(reply) is False
+
+
+def test_mbpp_verifier_handles_timeout(monkeypatch):
+    monkeypatch.setattr(eval_mod, "MBPP_TIMEOUT_S", 1)
+    test_list = ["loop()"]
+    verify = eval_mod._mbpp_verifier(test_list)
+    reply = "```python\ndef loop():\n    while True:\n        pass\n```"
+    assert verify(reply) is False
+
+
+def test_mbpp_loader_clear_error_without_datasets(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "datasets":
+            raise ImportError("No module named 'datasets'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(RuntimeError, match=r"thandv\[eval\]"):
+        eval_mod._load_mbpp_tasks()
+
+
 def test_run_suite_invokes_lazy_loader(thandv_home, monkeypatch):
     """A suite with a loader should populate tasks on first run."""
     calls = {"n": 0}

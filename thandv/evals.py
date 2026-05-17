@@ -211,6 +211,98 @@ HUMANEVAL = EvalSuite(
 SUITES[HUMANEVAL.name] = HUMANEVAL
 
 
+# --- MBPP -----------------------------------------------------------------
+
+MBPP_DATASET_DIR = THANDV_HOME / "datasets" / "mbpp"
+MBPP_TIMEOUT_S = 10
+
+
+def _mbpp_verifier(test_list: list[str]) -> Callable[[str], bool]:
+    """Build a verifier that exec's the model's completion alongside every
+    assertion in `test_list` in a subprocess. Same sandbox caveat as
+    HumanEval: timeout + separate process, no network isolation. Acceptable
+    for research; not for untrusted models in multi-tenant contexts.
+
+    MBPP differs from HumanEval in shape only: the dataset gives us a list
+    of bare assertion strings rather than a `check(candidate)` harness, so
+    we concatenate them directly after the model's code.
+    """
+    tests = "\n".join(test_list)
+
+    def verify(reply: str) -> bool:
+        code = _extract_python_code(reply)
+        program = code + "\n\n" + tests + "\n"
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write(program)
+            path = f.name
+        try:
+            proc = subprocess.run(
+                [sys.executable, path],
+                capture_output=True,
+                text=True,
+                timeout=MBPP_TIMEOUT_S,
+            )
+            return proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
+        finally:
+            try:
+                Path(path).unlink()
+            except OSError:
+                pass
+
+    return verify
+
+
+def _load_mbpp_tasks() -> list[EvalTask]:
+    """Download (cache) and convert the MBPP `sanitized` test split.
+
+    The sanitized config is the cleaner subset (~427 problems on test split
+    in current snapshots); the full config has more but is messier.
+    """
+    try:
+        from datasets import load_dataset  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(
+            "mbpp suite needs `datasets`. Install: pip install thandv[eval]"
+        ) from e
+
+    MBPP_DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    ds = load_dataset(
+        "mbpp",
+        "sanitized",
+        split="test",
+        cache_dir=str(MBPP_DATASET_DIR),
+    )
+
+    tasks: list[EvalTask] = []
+    for row in ds:
+        prompt = (
+            "Write the Python function described below. Return ONLY the full "
+            "function definition inside a single ```python``` code block — "
+            "no prose, no examples, no test cases.\n\n"
+            f"{row['prompt']}"
+        )
+        tasks.append(
+            EvalTask(
+                id=f"MBPP/{row['task_id']}",
+                prompt=prompt,
+                verify=_mbpp_verifier(row["test_list"]),
+            )
+        )
+    return tasks
+
+
+MBPP = EvalSuite(
+    name="mbpp",
+    default_persona="code",
+    loader=_load_mbpp_tasks,
+)
+SUITES[MBPP.name] = MBPP
+
+
 def list_suites() -> list[str]:
     return sorted(SUITES)
 
