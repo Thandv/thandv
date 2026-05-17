@@ -10,8 +10,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from thandv import rag
+
 MAX_READ_BYTES = 200_000
 MAX_BASH_SECONDS = 30
+MAX_RETRIEVE_K = 20
 
 
 def _resolve(path: str) -> Path:
@@ -87,12 +90,30 @@ def run_bash(command: str, confirm: bool = False) -> dict[str, Any]:
         return {"error": f"timeout after {MAX_BASH_SECONDS}s"}
 
 
+def retrieve(query: str, persona: str = "all", k: int = 5) -> dict[str, Any]:
+    """Retrieve top-k chunks from the persona's corpus by cosine similarity."""
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "query must be a non-empty string"}
+    try:
+        k = int(k)
+    except (TypeError, ValueError):
+        return {"error": "k must be an integer"}
+    if k < 1 or k > MAX_RETRIEVE_K:
+        return {"error": f"k must be in [1, {MAX_RETRIEVE_K}]"}
+    try:
+        results = rag.retrieve(query, persona=persona, k=k)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    return {"persona": persona, "k": k, "results": results}
+
+
 TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
     "read_file": read_file,
     "write_file": write_file,
     "edit_file": edit_file,
     "list_dir": list_dir,
     "run_bash": run_bash,
+    "retrieve": retrieve,
 }
 
 

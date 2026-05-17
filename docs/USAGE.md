@@ -44,6 +44,8 @@ thandv chat --persona writer "outline an essay on focus"
 thandv chat --persona finance "summarise the risk section in this 10-K"
 thandv eval                                # run smoke suite vs current model
 thandv eval --list                         # show suites + personas
+thandv ingest ./my-docs --persona code     # build a corpus for the code persona
+thandv ingest --stats                      # show what's been ingested
 thandv train status                        # show daemon + queue + state
 ```
 
@@ -98,6 +100,31 @@ Runs an eval suite against the current model + persona. Defaults to the
 `--limit N` runs only the first N tasks. `--list` shows available suites
 and personas, then exits.
 
+### `thandv ingest [PATH] [--persona NAME] [--stats] [--clear]`
+
+Ingest a file or directory into a persona's local corpus. Used by the
+`retrieve` tool inside agent sessions to look up relevant chunks before
+answering. Supported file extensions: `.md`, `.markdown`, `.txt`, `.rst`,
+`.py`, `.pyi`. Directories are walked recursively.
+
+```bash
+thandv ingest README.md                            # default persona "all"
+thandv ingest ./docs --persona code                # scope to code persona
+thandv ingest ./my-style-guide.md --persona writer
+thandv ingest --stats                              # all personas + chunk counts
+thandv ingest --stats --persona code               # one persona
+thandv ingest --clear --persona writer             # nuke the writer corpus
+```
+
+Storage: `~/.thandv/corpora/<persona>/chunks.jsonl` — one chunk per line
+with text, source path, and the 768-dim `nomic-embed-text` embedding.
+Re-ingesting the same source appends duplicates by default; clear first if
+you want a fresh start.
+
+Embeddings come from Ollama's `nomic-embed-text` (~270MB; `install.sh`
+pulls it automatically). Without it, `ingest` and `retrieve` both refuse to
+run.
+
 ### `thandv train [ACTION]`
 
 Manage the background training daemon. See
@@ -139,6 +166,10 @@ Everything user-side lives under `~/.thandv/`:
 ├── skills/                  # user-added skill markdown (loaded if listed in persona)
 ├── memory/                  # user-added persistent memory (always loaded)
 ├── evals/                   # eval results JSON, one per run
+├── corpora/                 # local RAG store, one subdir per persona
+│   ├── code/chunks.jsonl
+│   ├── writer/chunks.jsonl
+│   └── finance/chunks.jsonl
 └── training/
     ├── queue/               # JSONL files awaiting training
     ├── processed/           # consumed queue files (audit trail)

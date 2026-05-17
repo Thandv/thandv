@@ -51,4 +51,7 @@ fi
 say "pulling $MODEL (this can take a while on first run)..."
 ollama pull "$MODEL" || warn "model pull failed; you can retry with: ollama pull $MODEL"
 
+say "pulling nomic-embed-text (used by RAG; ~270MB)..."
+ollama pull nomic-embed-text || warn "embed model pull failed; RAG will be disabled until you run: ollama pull nomic-embed-text"
+
 say "done. Try: thandv doctor && thandv chat"
