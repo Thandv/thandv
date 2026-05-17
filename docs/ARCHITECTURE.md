@@ -73,13 +73,42 @@ The base model is shared. A persona only changes the system prompt and
 the skill subset loaded into context. Switching personas is free.
 Adding a persona is ~30 lines.
 
-### 3. Streaming with tool-block hiding
+### 3. Streaming with three tool-call protocols
 
 Ollama's `/api/chat?stream=true` returns NDJSON, one content chunk per
-line. The agent maintains an 8-character tail buffer over chunks so that
-the `\`\`\`tool\n` marker can be detected even when it straddles a chunk
-boundary. Tool-block bytes never reach the user's stream; instead a
-single-line `[tool] name(args)` summary is printed when the tool fires.
+line. The agent recognises three ways a model can signal a tool call,
+tried in priority order:
+
+1. **Native `message.tool_calls`** — the OpenAI / Ollama function-calling
+   field. Activated by sending `tools=TOOL_SCHEMAS` in the chat request.
+   This is the cleanest signal: structured, schema-validated, no parsing.
+2. **Text-based `\`\`\`tool\n{...}\n\`\`\`` block** — our explicit fallback
+   protocol documented in `skills/tool-use.md`. Caught by a regex over
+   the accumulated content stream. An 8-char tail buffer over chunks
+   ensures the marker is detected even when it straddles a boundary.
+3. **Inline JSON in `message.content`** — some smaller models (e.g.
+   certain `qwen2.5-coder` builds) emit the call as a raw JSON object
+   in content instead of using the native field. We detect this by:
+   - watching whether the first non-whitespace char of the streamed
+     content is `{`, and if so, buffering the whole reply rather than
+     yielding incrementally;
+   - at end-of-stream, parsing the buffered content and matching against
+     `TOOLS`. If it's a recognised tool, suppress the raw JSON entirely
+     (only the `[tool]` line shows); if not, deliver it as legitimate
+     output.
+
+Tool-block JSON never reaches the user's stream in cases (2) and (3); a
+single-line `[tool] name(args)` summary appears instead.
+
+After a tool dispatches, its result is appended to history with
+`role="tool"` (not `role="user"` as in earlier versions) and a `name`
+field. This is the OpenAI / Ollama contract and keeps the model from
+treating the result as a fresh user turn — which used to cause smaller
+models to loop on the same tool call without synthesising an answer.
+
+A duplicate-call guard short-circuits the agent if the model emits the
+*same* tool call twice in a row, instead of silently chewing through the
+hop budget.
 
 ### 4. Eval-gated training, always
 

@@ -184,3 +184,38 @@ def test_dispatch_retrieve(thandv_home, fake_embed):
     out = dispatch("retrieve", {"query": "alpha", "persona": "code", "k": 1})
     assert "error" not in out
     assert out["results"][0]["text"] == "alpha"
+
+
+# --- Native tool schemas --------------------------------------------------
+
+def test_every_tool_has_a_schema():
+    from thandv.tools import TOOL_SCHEMAS, TOOLS
+
+    impl = set(TOOLS)
+    sch = {s["function"]["name"] for s in TOOL_SCHEMAS}
+    assert impl == sch, f"impl-schema mismatch: only_impl={impl - sch}, only_schema={sch - impl}"
+
+
+def test_schemas_have_required_fields():
+    from thandv.tools import TOOL_SCHEMAS
+
+    for s in TOOL_SCHEMAS:
+        assert s["type"] == "function"
+        fn = s["function"]
+        assert fn["name"] and isinstance(fn["name"], str)
+        assert fn["description"] and isinstance(fn["description"], str)
+        params = fn["parameters"]
+        assert params["type"] == "object"
+        assert isinstance(params["properties"], dict)
+        # Every required key must exist in properties.
+        for req in params.get("required", []):
+            assert req in params["properties"], f"{fn['name']}: required {req} missing from properties"
+
+
+def test_retrieve_schema_includes_persona_override():
+    from thandv.tools import TOOL_SCHEMAS
+
+    fn = next(s["function"] for s in TOOL_SCHEMAS if s["function"]["name"] == "retrieve")
+    assert "persona" in fn["parameters"]["properties"]
+    # persona is NOT in required — the runtime fills it in.
+    assert "persona" not in fn["parameters"].get("required", [])
