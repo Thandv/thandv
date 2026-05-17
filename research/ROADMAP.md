@@ -38,8 +38,9 @@ may use free internet sources of good quality.**
 - [x] Results persisted to `~/.thandv/evals/`
 - [x] Real HumanEval integration: lazy `datasets` import, ~300 KB cached
       to `~/.thandv/datasets/`, subprocess-sandboxed verifier with
-      timeout. Baseline on `qwen2.5-coder:7b` first 10 tasks: 10/10 PASS.
-- [ ] MBPP integration (next; same pattern as HumanEval).
+      timeout. Full baseline on `qwen2.5-coder:7b`: **139/164 = 84.8% pass@1**.
+- [x] MBPP integration: same pattern as HumanEval, sanitized config,
+      `test_list`-based verifier. Full baseline not yet recorded (slow).
 - [ ] Small in-repo SWE-Bench-lite
 - [ ] Writer + finance eval suites (preference-based and finance-discipline)
 - [ ] Regression tracking across model + prompt versions

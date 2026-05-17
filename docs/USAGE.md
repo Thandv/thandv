@@ -105,6 +105,7 @@ Available suites:
 |-------------|------:|----------|-------|
 | `smoke`     | 3     | (none)   | Default. Arithmetic, string-reverse, `is_prime`. Runs in seconds. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
+| `mbpp`      | ~427  | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. |
 
 ```bash
 thandv eval                              # smoke, 3 tasks
@@ -117,6 +118,7 @@ they're stable):
 
 | Model                | Suite                  | Result    | Hardware |
 |----------------------|------------------------|-----------|----------|
+| `qwen2.5-coder:7b`   | `humaneval` (full 164) | **139/164 (84.8%)** | M2 16 GB |
 | `qwen2.5-coder:7b`   | `humaneval --limit 10` | 10/10 PASS | M2 16 GB |
 | `qwen2.5-coder:7b`   | `smoke`                | 3/3 PASS   | M2 16 GB |
 
