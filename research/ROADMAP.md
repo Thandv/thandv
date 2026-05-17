@@ -19,8 +19,11 @@ may use free internet sources of good quality.**
 - [x] Test suite (pytest), CI (GitHub Actions), PR template
 - [ ] Rich-text terminal UI (color, spinners, code highlighting)
 - [ ] `/commands` inside the REPL: `/reset`, `/save`, `/skills`, `/memory`
-- [ ] Native tool-call format (Qwen / Llama function-calling) instead of
-      fenced JSON blocks — fewer parse failures
+- [x] Native tool-call format (Ollama `tools`/`message.tool_calls`) plus
+      inline-JSON-in-content fallback for models that don't fully use the
+      native field. Tool results sent back as `role="tool"` per the OpenAI
+      contract. Duplicate-call guard breaks runaway loops. The 7B model
+      now reliably fires `retrieve` end-to-end where it previously didn't.
 - [ ] Cross-platform `install.sh` for Windows (PowerShell variant)
 
 ## v0.2 — personas + eval harness (current)

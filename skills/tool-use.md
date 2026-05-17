@@ -1,10 +1,22 @@
 Tool-use protocol reminder.
 
-Emit exactly one fenced block per turn:
+You may emit tool calls in any of these forms — the runtime accepts all
+three. Pick whichever your training prefers:
 
-```tool
-{"name": "<tool>", "args": { ... }}
-```
+1. Native function-calling (preferred): use the model API's structured
+   `tool_calls` field. The runtime sends tool schemas with each request.
+2. Fenced JSON block:
+
+   ```tool
+   {"name": "<tool>", "args": { ... }}
+   ```
+
+3. Inline JSON in your reply (last-resort): a single `{"name": ..., "arguments": ...}`
+   object as your entire content.
+
+After a tool returns, you'll see its result as a `role="tool"` message.
+Read it and USE it to answer the user. Do NOT call the same tool again
+with the same args — the runtime detects loops and stops.
 
 Available tools:
 - `read_file`  args: {"path": str}

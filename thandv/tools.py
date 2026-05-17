@@ -117,6 +117,138 @@ TOOLS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+# OpenAI / Ollama native function-calling schemas. Sent to the model via
+# `/api/chat` `tools` parameter so it can emit structured tool_calls
+# instead of the older text-based ```tool``` blocks. Names and arguments
+# mirror the TOOLS registry above; keep the two in sync.
+TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a UTF-8 file from disk. Content is truncated to 200 KB.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file. Overwrites if it exists; creates parent dirs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace a single occurrence of `old` with `new` in the file at `path`. "
+                "Errors if `old` is missing or appears more than once — include enough "
+                "surrounding context to make it unique."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old": {"type": "string"},
+                    "new": {"type": "string"},
+                },
+                "required": ["path", "old", "new"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List entries of a directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_bash",
+            "description": (
+                "Run a shell command with a 30-second timeout. Captures stdout and "
+                "stderr (tail-truncated). Refuses destructive commands (rm -rf, "
+                "mkfs, shutdown, etc.) unless `confirm=true`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Set true to allow destructive commands. Default false.",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve",
+            "description": (
+                "Look up the top-k most relevant chunks from your active persona's "
+                "local corpus by cosine similarity. The runtime fills in `persona` "
+                "with the active persona name; you can override with `\"all\"` to "
+                "search across every corpus, or a specific persona name."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "k": {"type": "integer", "description": "1 to 20. Default 5."},
+                    "persona": {
+                        "type": "string",
+                        "description": "Defaults to the active persona; set to \"all\" or another persona name to override.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+
+def _validate_schemas() -> None:
+    """Tripwire: every tool in TOOLS has a schema, and vice versa."""
+    impl_names = set(TOOLS)
+    schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+    missing_schema = impl_names - schema_names
+    missing_impl = schema_names - impl_names
+    if missing_schema:
+        raise RuntimeError(f"tools missing schemas: {sorted(missing_schema)}")
+    if missing_impl:
+        raise RuntimeError(f"schemas missing implementations: {sorted(missing_impl)}")
+
+
+_validate_schemas()
+
+
 def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
     fn = TOOLS.get(name)
     if fn is None:
