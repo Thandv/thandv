@@ -346,7 +346,7 @@ def _cmd_train_enable(args: argparse.Namespace, cfg: Config) -> int:
         )
         return 2
 
-    hf_model = args.hf_model or _default_hf_model_for(cfg.model)
+    hf_model = args.hf_model or tb.ollama_to_hf(cfg.model)
     print(f"backend:    {backend.name}")
     print(f"hf model:   {hf_model}")
 
@@ -362,6 +362,19 @@ def _cmd_train_enable(args: argparse.Namespace, cfg: Config) -> int:
             return 2
         print(f"base model: downloaded to {target}")
 
+    # llama.cpp's converter is what bridges MLX-fused HF safetensors to GGUF
+    # for Ollama serving. Clone once on first enable.
+    if not (tb.LLAMA_CPP_DIR / "convert_hf_to_gguf.py").exists():
+        print(f"llama.cpp: cloning to {tb.LLAMA_CPP_DIR} (for HF→GGUF conversion)...")
+        try:
+            tb.ensure_llama_cpp()
+        except Exception as e:
+            print(f"llama.cpp clone failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 2
+        print(f"llama.cpp: ready at {tb.LLAMA_CPP_DIR}")
+    else:
+        print(f"llama.cpp: already cloned at {tb.LLAMA_CPP_DIR}")
+
     if args.skip_verify:
         print("(skipping verification training run per --skip-verify)")
         return 0
@@ -376,27 +389,6 @@ def _cmd_train_enable(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
-def _default_hf_model_for(ollama_tag: str) -> str:
-    """Map an Ollama tag like 'qwen2.5-coder:7b' to its HF Hub repo id.
-
-    Trainer needs HF format; Ollama only ships GGUF. The mapping is hardcoded
-    for the models in our `runtime.MODEL_LADDER` — extend as we adopt more.
-    """
-    table = {
-        "qwen2.5-coder:7b":  "Qwen/Qwen2.5-Coder-7B",
-        "qwen2.5-coder:14b": "Qwen/Qwen2.5-Coder-14B",
-        "qwen2.5-coder:32b": "Qwen/Qwen2.5-Coder-32B",
-        "qwen2.5-coder:3b":  "Qwen/Qwen2.5-Coder-3B",
-        "qwen3-coder:30b":   "Qwen/Qwen3-Coder-30B-A3B",
-        "qwen3-coder:14b":   "Qwen/Qwen3-Coder-14B",
-        "llama3.2:3b":       "meta-llama/Llama-3.2-3B",
-    }
-    if ollama_tag in table:
-        return table[ollama_tag]
-    raise ValueError(
-        f"no HF mapping for ollama tag '{ollama_tag}'. "
-        f"Pass --hf-model <hf-repo-id> explicitly."
-    )
 
 
 def cmd_config(args: argparse.Namespace) -> int:

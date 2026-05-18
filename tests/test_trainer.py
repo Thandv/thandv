@@ -114,20 +114,42 @@ def test_tick_skip_when_queue_empty(thandv_home, monkeypatch):
     assert out["reason"] == "queue empty"
 
 
+def _fake_train_lora(adapter_id_seq=("adapter-1", "adapter-2")):
+    """Build a fake _train_lora that returns canned ids and creates the
+    adapter dir on disk (so cleanup-on-discard has something to remove).
+    """
+    iterator = iter(adapter_id_seq)
+
+    def fake(queue_file, base_ollama_model, *, hf_base_repo=None):
+        aid = next(iterator)
+        d = trainer.ADAPTERS_DIR / aid
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "merged.gguf").write_text("FAKE_GGUF")
+        return aid, f"thandv-{aid}"
+
+    return fake
+
+
 def test_tick_promotes_when_improved(thandv_home, monkeypatch):
     enqueue_examples("a", [{"prompt": "p", "completion": "c"}])
     rates = iter([0.5, 0.9])  # baseline then post-train
     monkeypatch.setattr(trainer, "_run_eval", lambda m: next(rates))
+    monkeypatch.setattr(trainer, "_train_lora", _fake_train_lora())
+    # Stub the ollama-rm in _discard_adapter — promote path may rm a prior
+    # active model, which is None here.
+    monkeypatch.setattr(trainer, "_discard_adapter", lambda *a, **kw: None)
+
     tick("fake-model")  # baseline
     out = tick("fake-model")
     assert out["action"] == "promote"
     assert out["pass_rate"] == 0.9
+    assert out["ollama_model"] == "thandv-adapter-1"
     s = load_state()
     assert s.best_eval_pass_rate == 0.9
-    assert s.active_adapter == out["adapter_id"]
-    # The adapter marker should still exist.
-    assert (trainer.ADAPTERS_DIR / f"{out['adapter_id']}.json").exists()
-    # The queue file should have moved to processed/.
+    assert s.active_adapter == "adapter-1"
+    assert s.active_ollama_model == "thandv-adapter-1"
+    # Adapter dir still on disk (we didn't discard).
+    assert (trainer.ADAPTERS_DIR / "adapter-1").exists()
     assert queue_size() == 0
     assert any(trainer.PROCESSED_DIR.iterdir())
 
@@ -136,14 +158,23 @@ def test_tick_discards_when_not_improved(thandv_home, monkeypatch):
     enqueue_examples("a", [{"prompt": "p", "completion": "c"}])
     rates = iter([0.9, 0.5])
     monkeypatch.setattr(trainer, "_run_eval", lambda m: next(rates))
+    monkeypatch.setattr(trainer, "_train_lora", _fake_train_lora())
+
+    discarded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        trainer, "_discard_adapter",
+        lambda aid, ollama_model: discarded.append((aid, ollama_model)),
+    )
+
     tick("fake-model")  # baseline at 0.9
     out = tick("fake-model")
     assert out["action"] == "discard"
     s = load_state()
     assert s.best_eval_pass_rate == 0.9  # unchanged
     assert s.active_adapter == ""
-    # Adapter file should have been deleted.
-    assert not (trainer.ADAPTERS_DIR / f"{out['adapter_id']}.json").exists()
+    assert s.active_ollama_model == "fake-model"  # baseline locked the active
+    # The failed adapter was cleaned up via _discard_adapter.
+    assert ("adapter-1", "thandv-adapter-1") in discarded
     # Queue file is still consumed (moved to processed) so we don't loop.
     assert queue_size() == 0
 
@@ -159,19 +190,54 @@ def test_tick_skip_when_post_train_eval_fails(thandv_home, monkeypatch):
         raise RuntimeError("ollama died mid-tick")
 
     monkeypatch.setattr(trainer, "_run_eval", flaky)
+    monkeypatch.setattr(trainer, "_train_lora", _fake_train_lora())
+
+    discarded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        trainer, "_discard_adapter",
+        lambda aid, ollama_model: discarded.append((aid, ollama_model)),
+    )
+
     tick("fake-model")  # baseline
     out = tick("fake-model")
     assert out["action"] == "skip"
     assert "eval failed" in out["reason"]
     # Queue file should NOT have been consumed (so we'll retry).
     assert queue_size() == 1
-    # No adapter marker should be left behind.
+    # The trained adapter was cleaned up via _discard_adapter.
+    assert ("adapter-1", "thandv-adapter-1") in discarded
+
+
+def test_tick_skip_when_train_fails(thandv_home, monkeypatch):
+    """If _train_lora itself raises (mlx OOM, disk full, etc.), the tick
+    skips, the queue file stays in place, no adapter artifacts left."""
+    enqueue_examples("a", [{"prompt": "p", "completion": "c"}])
+    monkeypatch.setattr(trainer, "_run_eval", lambda m: 0.5)
+
+    def boom_train(*args, **kwargs):
+        raise RuntimeError("MLX OOM mid-train")
+
+    monkeypatch.setattr(trainer, "_train_lora", boom_train)
+
+    tick("fake-model")  # baseline
+    out = tick("fake-model")
+    assert out["action"] == "skip"
+    assert "train failed" in out["reason"]
+    assert "MLX OOM" in out["reason"]
+    # Queue file untouched.
+    assert queue_size() == 1
+    # No adapter dirs left.
     assert not any(trainer.ADAPTERS_DIR.iterdir())
 
 
 def test_tick_dry_run_doesnt_train(thandv_home, monkeypatch):
     enqueue_examples("a", [{"prompt": "p", "completion": "c"}])
     monkeypatch.setattr(trainer, "_run_eval", lambda m: 0.5)
+
+    def must_not_train(*a, **kw):
+        raise AssertionError("dry-run must not invoke _train_lora")
+
+    monkeypatch.setattr(trainer, "_train_lora", must_not_train)
     tick("fake-model")  # baseline
     out = tick("fake-model", dry_run=True)
     assert out["action"] == "skip"
@@ -179,6 +245,15 @@ def test_tick_dry_run_doesnt_train(thandv_home, monkeypatch):
     # Queue file still queued.
     assert queue_size() == 1
     assert not any(trainer.ADAPTERS_DIR.iterdir())
+
+
+def test_tick_baseline_locks_active_model(thandv_home, monkeypatch):
+    """After baseline, state.active_ollama_model gets set to base_model so
+    subsequent ticks evaluate against the right thing consistently."""
+    monkeypatch.setattr(trainer, "_run_eval", lambda m: 0.5)
+    tick("fake-model")
+    s = load_state()
+    assert s.active_ollama_model == "fake-model"
 
 
 # --- Logs -----------------------------------------------------------------
