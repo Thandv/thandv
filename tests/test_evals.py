@@ -273,6 +273,85 @@ def test_format_regression_line_regression():
     assert "-30.0pp" in line
 
 
+# --- SWE-bench-lite -------------------------------------------------------
+
+def test_swe_lite_suite_registered():
+    suite = get_suite("swe-lite")
+    assert suite.name == "swe-lite"
+    assert suite.default_persona == "code"
+    assert len(suite.tasks) == 3
+    for t in suite.tasks:
+        assert t.id and t.prompt and callable(t.verify)
+
+
+def test_swe_lite_fix_off_by_one_accepts_correct():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    fix = "```python\ndef last_n_items(items, n):\n    return items[-n:]\n```"
+    assert task.verify(fix) is True
+
+
+def test_swe_lite_fix_off_by_one_rejects_original_bug():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    still_broken = "```python\ndef last_n_items(items, n):\n    return items[-n + 1:]\n```"
+    assert task.verify(still_broken) is False
+
+
+def test_swe_lite_handle_empty_list_accepts_correct():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "handle-empty-list")
+    fix = (
+        "```python\n"
+        "def average(nums):\n"
+        "    if not nums:\n"
+        "        return 0.0\n"
+        "    return sum(nums) / len(nums)\n"
+        "```"
+    )
+    assert task.verify(fix) is True
+
+
+def test_swe_lite_handle_empty_list_rejects_original_bug():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "handle-empty-list")
+    bug = "```python\ndef average(nums):\n    return sum(nums) / len(nums)\n```"
+    assert task.verify(bug) is False
+
+
+def test_swe_lite_fix_comparison_bounds_accepts_correct():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-comparison-bounds")
+    fix = "```python\ndef is_valid_age(age):\n    return 0 <= age <= 120\n```"
+    assert task.verify(fix) is True
+
+
+def test_swe_lite_fix_comparison_bounds_rejects_original_bug():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-comparison-bounds")
+    bug = "```python\ndef is_valid_age(age):\n    return 0 < age < 120\n```"
+    assert task.verify(bug) is False
+
+
+def test_swe_lite_verifier_rejects_syntax_error():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    bad = "```python\ndef last_n_items(\n    return items[-n:]\n```"  # SyntaxError
+    assert task.verify(bad) is False
+
+
+def test_swe_lite_verifier_rejects_missing_function():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    bad = "```python\ndef other_name(items, n):\n    return items[-n:]\n```"
+    assert task.verify(bad) is False
+
+
+def test_swe_lite_verifier_handles_timeout(monkeypatch):
+    monkeypatch.setattr(eval_mod, "SWE_LITE_TIMEOUT_S", 1)
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    forever = (
+        "```python\n"
+        "def last_n_items(items, n):\n"
+        "    while True:\n"
+        "        pass\n"
+        "```"
+    )
+    assert task.verify(forever) is False
+
+
 def test_eval_dataclasses():
     task = EvalTask(id="x", prompt="p", verify=lambda r: True)
     suite = EvalSuite(name="t", tasks=[task])

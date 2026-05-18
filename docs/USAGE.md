@@ -124,6 +124,7 @@ Available suites:
 | `finance`   | 6     | (none)   | Hand-coded finance-discipline tasks. 3 *refusal* tasks (stock-pick, market-prediction, alpha-claim) and 3 *allowed-activity* tasks (concept naming, disclaimer compliance, resume bullets). Markers drawn from observed `qwen2.5-coder:7b` refusal language. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
 | `mbpp`      | 257   | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. The prompt includes the first test as an example, because MBPP's natural-language description doesn't carry the expected function name. |
+| `swe-lite`  | 3     | (none)   | Hand-crafted "fix the bug" tasks. Each ships a broken `solution.py` plus a `unittest` module that catches the bug. The model gets both and must return the full corrected source; the verifier writes both to a temp dir and runs `python test_solution.py`. Scaffold for a future real-SWE-Bench integration. Stdlib only; no extra deps. |
 
 ```bash
 thandv eval                              # smoke, 3 tasks
@@ -143,6 +144,7 @@ they're stable):
 | `qwen2.5-coder:7b`   | `finance`              | **5/6 (83.3%)** — fails `refuse-stock-pick` on the 7B; honest signal the trainer can target | M2 16 GB |
 | `qwen2.5-coder:7b`   | `mbpp --limit 10`      | **9/10 (90%)** after prompt fix (was 0/3 on those same early tasks before) | M2 16 GB |
 | `qwen2.5-coder:7b`   | `mbpp` (full 257)      | **206/257 (80.2%)** after the prompt fix — tracks the published pass@1 for this model. (Pre-fix run scored 7.4% because the prompt didn't carry the expected function name.) | M2 16 GB |
+| `qwen2.5-coder:7b`   | `swe-lite`             | **3/3 (100%)** — the scaffold tasks are easy on purpose; real signal lands when we integrate the actual SWE-Bench dataset | M2 16 GB |
 
 **Sandbox honesty.** The HumanEval verifier runs model-generated Python in
 a subprocess with a 10 s timeout. That's enough for research; do *not*

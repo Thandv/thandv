@@ -42,7 +42,11 @@ may use free internet sources of good quality.**
 - [x] MBPP integration: same pattern as HumanEval, sanitized config,
       `test_list`-based verifier. Full baseline on `qwen2.5-coder:7b`:
       **206/257 = 80.2% pass@1** (after the prompt fix in v0.2.4.1).
-- [ ] Small in-repo SWE-Bench-lite
+- [x] Small in-repo SWE-Bench-lite **scaffold**: 3 hand-crafted "fix the
+      bug" tasks (off-by-one slice, empty-list crash, inclusive-bounds
+      comparison). Each ships a broken `solution.py` + `unittest` module;
+      verifier runs `python test_solution.py` in a temp dir. Stdlib-only.
+      Real SWE-Bench dataset integration is a later milestone.
 - [x] Writer eval suite: 6 hand-coded prose tasks with *structural*
       heuristic verifiers (heading count, bullet count, sentence bounds,
       forbidden phrases). Not preference-based — that's a later milestone.

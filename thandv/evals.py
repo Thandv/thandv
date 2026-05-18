@@ -590,6 +590,164 @@ MBPP = EvalSuite(
 SUITES[MBPP.name] = MBPP
 
 
+# --- SWE-bench-lite scaffold ----------------------------------------------
+# Tiny hand-crafted "fix this bug" tasks. Each task ships a broken file
+# plus a unittest module that catches the bug. The model gets both and
+# must return the corrected source; the verifier writes both to a temp
+# dir, runs `python test_solution.py`, and gates on exit code.
+#
+# Stdlib-only (`unittest`), so this suite has no extra deps. Real
+# SWE-Bench integration (thousands of OSS issues with patches) is a later
+# milestone — this scaffold proves the harness shape.
+
+SWE_LITE_TIMEOUT_S = 20
+
+
+def _swe_lite_verifier(test_code: str) -> Callable[[str], bool]:
+    """Run the model's corrected solution against the task's unittest."""
+
+    def verify(reply: str) -> bool:
+        code = _extract_python_code(reply)
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "solution.py").write_text(code)
+            (Path(td) / "test_solution.py").write_text(test_code)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "test_solution.py"],
+                    cwd=td,
+                    capture_output=True,
+                    text=True,
+                    timeout=SWE_LITE_TIMEOUT_S,
+                )
+                return proc.returncode == 0
+            except subprocess.TimeoutExpired:
+                return False
+            except Exception:
+                return False
+
+    return verify
+
+
+def _swe_lite_prompt(description: str, broken_code: str, test_code: str) -> str:
+    return (
+        f"{description}\n\n"
+        "Read the failing test below carefully — its assertions describe the "
+        "correct behaviour. Return ONLY the full corrected Python source "
+        "(replacing the entire `solution.py` file) inside a single "
+        "```python``` code block. No prose, no commentary.\n\n"
+        f"# Broken `solution.py`:\n```python\n{broken_code}\n```\n\n"
+        f"# Failing test (`test_solution.py`, run with `python test_solution.py`):\n"
+        f"```python\n{test_code}\n```"
+    )
+
+
+# Task 1: off-by-one in a slice.
+_SWE_LAST_N_BROKEN = '''\
+def last_n_items(items, n):
+    """Return the last n items of a list."""
+    return items[-n + 1:]
+'''
+_SWE_LAST_N_TEST = '''\
+import unittest
+from solution import last_n_items
+
+class T(unittest.TestCase):
+    def test_normal(self):
+        self.assertEqual(last_n_items([1, 2, 3, 4, 5], 2), [4, 5])
+    def test_single(self):
+        self.assertEqual(last_n_items([1, 2, 3], 1), [3])
+    def test_all(self):
+        self.assertEqual(last_n_items([1, 2, 3], 3), [1, 2, 3])
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+# Task 2: ZeroDivisionError on empty list.
+_SWE_AVERAGE_BROKEN = '''\
+def average(nums):
+    """Return the arithmetic mean of nums. Empty list returns 0.0."""
+    return sum(nums) / len(nums)
+'''
+_SWE_AVERAGE_TEST = '''\
+import unittest
+from solution import average
+
+class T(unittest.TestCase):
+    def test_normal(self):
+        self.assertAlmostEqual(average([2.0, 4.0, 6.0]), 4.0)
+    def test_empty_returns_zero(self):
+        self.assertEqual(average([]), 0.0)
+    def test_single(self):
+        self.assertEqual(average([7]), 7.0)
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+# Task 3: strict comparison should be inclusive.
+_SWE_AGE_BROKEN = '''\
+def is_valid_age(age):
+    """True iff age is an integer in the inclusive range [0, 120]."""
+    return 0 < age < 120
+'''
+_SWE_AGE_TEST = '''\
+import unittest
+from solution import is_valid_age
+
+class T(unittest.TestCase):
+    def test_zero_is_valid(self):
+        self.assertTrue(is_valid_age(0))
+    def test_one_twenty_is_valid(self):
+        self.assertTrue(is_valid_age(120))
+    def test_middle_valid(self):
+        self.assertTrue(is_valid_age(40))
+    def test_negative_invalid(self):
+        self.assertFalse(is_valid_age(-1))
+    def test_too_large_invalid(self):
+        self.assertFalse(is_valid_age(121))
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+
+SWE_LITE = EvalSuite(
+    name="swe-lite",
+    default_persona="code",
+    tasks=[
+        EvalTask(
+            id="fix-off-by-one",
+            prompt=_swe_lite_prompt(
+                "The function `last_n_items` has an off-by-one bug in its slice.",
+                _SWE_LAST_N_BROKEN,
+                _SWE_LAST_N_TEST,
+            ),
+            verify=_swe_lite_verifier(_SWE_LAST_N_TEST),
+        ),
+        EvalTask(
+            id="handle-empty-list",
+            prompt=_swe_lite_prompt(
+                "The function `average` crashes on an empty list. The docstring says it should return 0.0 instead.",
+                _SWE_AVERAGE_BROKEN,
+                _SWE_AVERAGE_TEST,
+            ),
+            verify=_swe_lite_verifier(_SWE_AVERAGE_TEST),
+        ),
+        EvalTask(
+            id="fix-comparison-bounds",
+            prompt=_swe_lite_prompt(
+                "The function `is_valid_age` uses strict comparisons but the docstring says the range is inclusive at both ends.",
+                _SWE_AGE_BROKEN,
+                _SWE_AGE_TEST,
+            ),
+            verify=_swe_lite_verifier(_SWE_AGE_TEST),
+        ),
+    ],
+)
+SUITES[SWE_LITE.name] = SWE_LITE
+
+
 def list_suites() -> list[str]:
     return sorted(SUITES)
 
