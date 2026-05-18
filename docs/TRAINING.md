@@ -126,21 +126,39 @@ You give the trainer something to train on by putting JSONL files in
 {"prompt": "What is 7 * 8?", "completion": "56"}
 ```
 
-Add a file:
+Add a file you wrote yourself:
 
 ```bash
 thandv train enqueue path/to/examples.jsonl
 ```
 
-Once v0.4 lands, additional ingestion paths are planned:
+Or pull rows from a registered HuggingFace public dataset (v0.4.2+):
 
-- **Public datasets** (license-clean slices of The Stack v2, CodeAlpaca,
-  FineWeb-Edu).
+```bash
+thandv train datasets                                  # list registered
+thandv train sample-public codealpaca --n 100          # 100 random rows → queue
+thandv train sample-public dolly --n 50 --seed 7       # reproducible
+```
+
+Currently registered datasets (extend in `thandv/training_data.py`):
+
+| Name         | License       | Persona hint | Notes                                |
+|--------------|---------------|--------------|--------------------------------------|
+| `codealpaca` | cc-by-4.0     | code         | 20k instruction-following code tasks |
+| `dolly`      | cc-by-sa-3.0  | writer       | 15k human-written instructions       |
+| `alpaca`     | cc-by-nc-4.0  | code         | 52k examples; generated with text-davinci-003 — non-commercial only, check OpenAI ToS |
+
+Filenames in the queue carry provenance: `<unix-ts>-<dataset>-n<count>.jsonl`.
+
+Additional ingestion paths landing in later milestones:
+
 - **Teacher distillation** from ToS-whitelisted free-tier APIs
-  (Gemini free, Groq free, Together free, OpenRouter free models).
-  Excluded: Anthropic, OpenAI — their ToS forbids competing-model
-  training.
-- **Session promotion** — verifier-passed user sessions auto-converted
+  (Gemini free, Groq free, Together free, OpenRouter free models) — v0.5.
+  Excluded: Anthropic, OpenAI — their ToS forbids competing-model training.
+- **Verifier-filtered synthetic data** — v0.6. Generate via free teachers,
+  keep only what passes local unit tests / lints. Where the loop actually
+  starts compounding.
+- **Session promotion** — v0.7. Verifier-passed user sessions auto-converted
   to training pairs.
 
 ## Observability
