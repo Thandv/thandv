@@ -555,11 +555,21 @@ def _load_mbpp_tasks() -> list[EvalTask]:
 
     tasks: list[EvalTask] = []
     for row in ds:
+        # MBPP's natural-language prompt does NOT tell the model what to name
+        # the function, but the test_list asserts against a specific name
+        # ("remove_Occ" not "remove_first_last_occurrence"). The MBPP paper
+        # and every published baseline include the first test in the prompt
+        # so the model can infer the signature. Without this fix the 7B
+        # scores ~7% — with it, ~75%+.
+        example_test = row["test_list"][0] if row["test_list"] else ""
         prompt = (
-            "Write the Python function described below. Return ONLY the full "
-            "function definition inside a single ```python``` code block — "
-            "no prose, no examples, no test cases.\n\n"
-            f"{row['prompt']}"
+            "Write the Python function described below. Your function must "
+            "match the signature implied by the example test. Return ONLY the "
+            "full function definition inside a single ```python``` code block "
+            "— no prose, no explanation.\n\n"
+            f"{row['prompt']}\n\n"
+            f"Example test (your function name and signature must satisfy this):\n"
+            f"{example_test}"
         )
         tasks.append(
             EvalTask(

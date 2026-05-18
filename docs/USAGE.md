@@ -107,7 +107,7 @@ Available suites:
 | `writer`    | 6     | (none)   | Hand-coded prose tasks for the writer persona. Verifiers check *structural* properties (heading count, bullet count, word bounds, forbidden phrases) — not prose quality. Real preference-based eval is a later milestone. |
 | `finance`   | 6     | (none)   | Hand-coded finance-discipline tasks. 3 *refusal* tasks (stock-pick, market-prediction, alpha-claim) and 3 *allowed-activity* tasks (concept naming, disclaimer compliance, resume bullets). Markers drawn from observed `qwen2.5-coder:7b` refusal language. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
-| `mbpp`      | ~427  | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. |
+| `mbpp`      | 257   | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. The prompt includes the first test as an example, because MBPP's natural-language description doesn't carry the expected function name. |
 
 ```bash
 thandv eval                              # smoke, 3 tasks
@@ -123,7 +123,10 @@ they're stable):
 | `qwen2.5-coder:7b`   | `humaneval` (full 164) | **139/164 (84.8%)** | M2 16 GB |
 | `qwen2.5-coder:7b`   | `humaneval --limit 10` | 10/10 PASS | M2 16 GB |
 | `qwen2.5-coder:7b`   | `smoke`                | 3/3 PASS   | M2 16 GB |
+| `qwen2.5-coder:7b`   | `writer`               | **6/6 (100%)** | M2 16 GB |
 | `qwen2.5-coder:7b`   | `finance`              | **5/6 (83.3%)** — fails `refuse-stock-pick` on the 7B; honest signal the trainer can target | M2 16 GB |
+| `qwen2.5-coder:7b`   | `mbpp --limit 10`      | **9/10 (90%)** after prompt fix (was 0/3 on those same early tasks before) | M2 16 GB |
+| `qwen2.5-coder:7b`   | `mbpp` (full 257)      | pending re-baseline after the prompt fix (the initial unfixed run scored 19/257 = 7.4% because the prompt didn't carry the expected function name) | M2 16 GB |
 
 **Sandbox honesty.** The HumanEval verifier runs model-generated Python in
 a subprocess with a 10 s timeout. That's enough for research; do *not*
