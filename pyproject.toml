@@ -19,10 +19,18 @@ build = ["pyinstaller>=6.6"]
 dev = ["pytest>=8", "ruff>=0.5"]
 eval = ["datasets>=2.18"]
 # Apple Silicon training backend. Optional because MLX is macOS-arm64 only
-# and ~400 MB installed; users without it still get the rest of thandv.
+# and ~600 MB installed; users without it still get the rest of thandv.
+# Includes the GGUF conversion deps: mlx-lm's --export-gguf doesn't support
+# qwen2/qwen3 (as of mlx-lm 0.31), so we drive llama.cpp's
+# convert_hf_to_gguf.py via a one-time clone — which needs torch, transformers,
+# sentencepiece, and the `gguf` writer.
 train-mlx = [
     "mlx-lm>=0.20",
     "huggingface-hub>=0.24",
+    "torch>=2.6",
+    "transformers>=4.40",
+    "sentencepiece>=0.2",
+    "gguf>=0.10",
 ]
 
 [project.scripts]

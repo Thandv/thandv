@@ -59,6 +59,7 @@ def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     base_models.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(training_backend, "TRAINING_DIR", training)
     monkeypatch.setattr(training_backend, "BASE_MODELS_DIR", base_models)
+    monkeypatch.setattr(training_backend, "LLAMA_CPP_DIR", training / "llama.cpp")
 
     return home
 

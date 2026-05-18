@@ -103,28 +103,89 @@ def test_mlx_train_invokes_subprocess_with_expected_args(thandv_home, tmp_path, 
     assert result.backend == "mlx-lm"
 
 
-def test_mlx_merge_adapter_invokes_fuse(thandv_home, tmp_path, monkeypatch):
+def test_mlx_merge_to_gguf_runs_fuse_then_llama_cpp_convert(
+    thandv_home, tmp_path, monkeypatch
+):
+    """Two subprocess calls in order: mlx_lm.fuse (HF), then llama.cpp's
+    convert_hf_to_gguf.py."""
     base = tmp_path / "base"
     base.mkdir()
     adapter = tmp_path / "adapter"
     adapter.mkdir()
-    out = tmp_path / "merged"
+    out_gguf = tmp_path / "out" / "merged.gguf"
 
+    captured_cmds: list[list] = []
+
+    def fake_run(cmd, check=True, cwd=None):
+        captured_cmds.append(cmd)
+        return type("CP", (), {"returncode": 0})()
+
+    monkeypatch.setattr(tb.subprocess, "run", fake_run)
+
+    # The merge_to_gguf path calls ensure_llama_cpp; mock it to return a
+    # fake path so we don't try to actually clone.
+    fake_llama = tmp_path / "fake_llama_cpp"
+    fake_llama.mkdir()
+    (fake_llama / "convert_hf_to_gguf.py").touch()
+    monkeypatch.setattr(tb, "ensure_llama_cpp", lambda: fake_llama)
+
+    returned = tb.MLXBackend().merge_to_gguf(base, adapter, out_gguf)
+
+    assert returned == out_gguf
+    assert len(captured_cmds) == 2
+
+    fuse_cmd = captured_cmds[0]
+    assert "mlx_lm" in fuse_cmd and "fuse" in fuse_cmd
+    assert "--model" in fuse_cmd and str(base) in fuse_cmd
+    assert "--adapter-path" in fuse_cmd and str(adapter) in fuse_cmd
+    # We do NOT use --export-gguf in the fuse step.
+    assert "--export-gguf" not in fuse_cmd
+
+    convert_cmd = captured_cmds[1]
+    assert str(fake_llama / "convert_hf_to_gguf.py") in convert_cmd
+    assert "--outfile" in convert_cmd and str(out_gguf) in convert_cmd
+
+
+def test_ensure_llama_cpp_skip_if_present(thandv_home, monkeypatch):
+    """If the script already exists, ensure_llama_cpp is a no-op."""
+    tb.LLAMA_CPP_DIR.mkdir(parents=True, exist_ok=True)
+    (tb.LLAMA_CPP_DIR / "convert_hf_to_gguf.py").touch()
+
+    called = {"n": 0}
+
+    def fake_run(cmd, check=True):
+        called["n"] += 1
+        return type("CP", (), {"returncode": 0})()
+
+    monkeypatch.setattr(tb.subprocess, "run", fake_run)
+    result = tb.ensure_llama_cpp()
+    assert result == tb.LLAMA_CPP_DIR
+    assert called["n"] == 0
+
+
+def test_ensure_llama_cpp_clones_when_missing(thandv_home, monkeypatch):
+    """If the script is missing, git clone gets invoked with the repo URL."""
     captured: dict = {}
 
     def fake_run(cmd, check=True):
         captured["cmd"] = cmd
+        # Pretend the clone produced the expected files.
+        tb.LLAMA_CPP_DIR.mkdir(parents=True, exist_ok=True)
+        (tb.LLAMA_CPP_DIR / "convert_hf_to_gguf.py").touch()
         return type("CP", (), {"returncode": 0})()
 
     monkeypatch.setattr(tb.subprocess, "run", fake_run)
-    returned = tb.MLXBackend().merge_adapter(base, adapter, out)
-
+    result = tb.ensure_llama_cpp()
+    assert result == tb.LLAMA_CPP_DIR
     cmd = captured["cmd"]
-    assert "mlx_lm.fuse" in cmd
-    assert "--model" in cmd and str(base) in cmd
-    assert "--adapter-path" in cmd and str(adapter) in cmd
-    assert "--save-path" in cmd and str(out) in cmd
-    assert returned == out
+    assert "git" in cmd and "clone" in cmd
+    assert "--depth=1" in cmd
+    assert tb.LLAMA_CPP_REPO in cmd
+
+
+def test_hfpeft_merge_to_gguf_raises_until_implemented():
+    with pytest.raises(NotImplementedError):
+        tb.HFPEFTBackend().merge_to_gguf(Path("/x"), Path("/y"), Path("/z"))
 
 
 # --- HF base-model fetch --------------------------------------------------

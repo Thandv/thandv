@@ -13,20 +13,27 @@ the only kind of self-improvement that actually works.
 
 ## State of the trainer
 
-| Component                   | v0.2.x (today)                  | v0.4 (planned)                 |
-|-----------------------------|---------------------------------|--------------------------------|
-| Queue management            | ✅ JSONL files in `queue/`       | ✅ unchanged                    |
-| Eval gate                   | ✅ smoke suite (3 tasks)         | ⏭ HumanEval / MBPP / SWE-Bench |
-| Adapter promote / discard   | ✅ marker file                   | ⏭ safetensors + manifest       |
-| **Actual LoRA training**    | 🚧 stubbed (no weight updates)   | ✅ Unsloth (CUDA) / MLX-LM (M-series) |
-| Daemon control              | ✅ run/stop/pause/resume/status  | ✅ unchanged                    |
-| launchd / systemd templates | ✅ provided                      | ✅ unchanged                    |
+| Component                   | Today (v0.4.1)                       |
+|-----------------------------|--------------------------------------|
+| Queue management            | ✅ JSONL files in `queue/`            |
+| Eval gate                   | ✅ smoke suite (configurable later)  |
+| Adapter promote / discard   | ✅ real GGUF + Ollama registration   |
+| **Actual LoRA training**    | ✅ real (MLX-LM on M-series; HF+PEFT fallback stubbed for now) |
+| Daemon control              | ✅ run / stop / pause / resume / status |
+| launchd / systemd templates | ✅ provided                           |
 
-**What this means.** Today you can run the daemon, queue training data,
-watch ticks happen, see eval gates fire, see adapters promote or get
-discarded — all the orchestration is real. The inner "actually update
-weights" step is a stub that writes a marker file. v0.4 swaps the stub
-for a real trainer; nothing else changes.
+**What's real.** The orchestration *and* the inner training step both
+work. A tick now downloads (on first run) the HF base model, trains a
+LoRA adapter via MLX-LM, merges + exports a GGUF via `mlx_lm fuse
+--export-gguf`, registers the new model in Ollama as
+`thandv-adapter-<ts>`, runs the eval gate against the new model, and
+either promotes (recording it as `active_ollama_model`) or discards it
+(`ollama rm`).
+
+**Honest expectations.** A single LoRA on a 7B base via MLX-LM on M2
+16 GB is tight — small batch sizes, short context windows, ~30-60 min
+per small adapter. If you hit OOM, drop to a smaller training base via
+`thandv train enable --hf-model <smaller-repo>`.
 
 ## Pipeline
 

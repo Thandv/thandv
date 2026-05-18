@@ -32,6 +32,11 @@ from thandv.config import THANDV_HOME
 
 TRAINING_DIR = THANDV_HOME / "training"
 BASE_MODELS_DIR = TRAINING_DIR / "base"
+# Where we clone llama.cpp for its convert_hf_to_gguf.py script. mlx-lm's
+# own GGUF exporter doesn't support qwen2/qwen3 (as of 0.31), so we lean
+# on llama.cpp's converter for the HF→GGUF step.
+LLAMA_CPP_DIR = TRAINING_DIR / "llama.cpp"
+LLAMA_CPP_REPO = "https://github.com/ggerganov/llama.cpp.git"
 
 
 @dataclass
@@ -72,17 +77,18 @@ class TrainerBackend(Protocol):
         """
         ...
 
-    def merge_adapter(
+    def merge_to_gguf(
         self,
         base_hf_dir: Path,
         adapter_dir: Path,
-        out_hf_dir: Path,
+        out_gguf_path: Path,
     ) -> Path:
-        """Fold the adapter into the base, producing a new HF-format model
-        directory at `out_hf_dir`. Returns the same path on success.
+        """Fold the adapter into the base AND export the result as a GGUF
+        file at `out_gguf_path`. Returns the same path on success.
 
-        The merged model is what we later convert to GGUF for Ollama
-        serving.
+        Implementations may write an intermediate HF safetensors dir as a
+        side-effect; the caller only cares about the GGUF (which is what
+        Ollama serves).
         """
         ...
 
@@ -154,21 +160,43 @@ class MLXBackend:
             backend=self.name,
         )
 
-    def merge_adapter(
+    def merge_to_gguf(
         self,
         base_hf_dir: Path,
         adapter_dir: Path,
-        out_hf_dir: Path,
+        out_gguf_path: Path,
     ) -> Path:
-        out_hf_dir.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            sys.executable, "-m", "mlx_lm.fuse",
+        """Two-step merge: mlx_lm.fuse → fused HF safetensors, then
+        llama.cpp's convert_hf_to_gguf.py → GGUF.
+
+        We tried `mlx_lm.fuse --export-gguf` first — it works for some
+        architectures but errors with "Model type qwen2 not supported for
+        GGUF conversion" on Qwen2/Qwen3. llama.cpp's converter handles
+        every architecture we currently target.
+        """
+        out_gguf_path.parent.mkdir(parents=True, exist_ok=True)
+        fused_hf_dir = out_gguf_path.parent / "fused_hf"
+
+        # Step 1: fuse adapter into base, output HF safetensors.
+        fuse_cmd = [
+            sys.executable, "-m", "mlx_lm", "fuse",
             "--model", str(base_hf_dir),
             "--adapter-path", str(adapter_dir),
-            "--save-path", str(out_hf_dir),
+            "--save-path", str(fused_hf_dir),
         ]
-        subprocess.run(cmd, check=True)
-        return out_hf_dir
+        subprocess.run(fuse_cmd, check=True)
+
+        # Step 2: HF safetensors → GGUF via llama.cpp's converter.
+        llama_cpp = ensure_llama_cpp()
+        convert_cmd = [
+            sys.executable,
+            str(llama_cpp / "convert_hf_to_gguf.py"),
+            str(fused_hf_dir),
+            "--outfile", str(out_gguf_path),
+        ]
+        subprocess.run(convert_cmd, check=True)
+
+        return out_gguf_path
 
 
 # --- HF Transformers + PEFT backend (universal fallback) ------------------
@@ -190,7 +218,7 @@ class HFPEFTBackend:
     def train(self, *args, **kwargs) -> TrainResult:
         raise NotImplementedError("hf-peft backend lands in a later milestone")
 
-    def merge_adapter(self, *args, **kwargs) -> Path:
+    def merge_to_gguf(self, *args, **kwargs) -> Path:
         raise NotImplementedError("hf-peft backend lands in a later milestone")
 
 
@@ -209,6 +237,52 @@ def pick_backend() -> TrainerBackend | None:
         if backend.is_available():
             return backend
     return None
+
+
+# --- Ollama tag → HuggingFace repo ----------------------------------------
+
+# Ollama serves GGUF; trainers want HF format. Bridge the two by mapping
+# the Ollama-side tag we already pick at runtime to the canonical HF repo
+# id of the same base model.
+OLLAMA_TO_HF: dict[str, str] = {
+    "qwen2.5-coder:7b":  "Qwen/Qwen2.5-Coder-7B",
+    "qwen2.5-coder:14b": "Qwen/Qwen2.5-Coder-14B",
+    "qwen2.5-coder:32b": "Qwen/Qwen2.5-Coder-32B",
+    "qwen2.5-coder:3b":  "Qwen/Qwen2.5-Coder-3B",
+    "qwen3-coder:30b":   "Qwen/Qwen3-Coder-30B-A3B",
+    "qwen3-coder:14b":   "Qwen/Qwen3-Coder-14B",
+    "llama3.2:3b":       "meta-llama/Llama-3.2-3B",
+}
+
+
+def ollama_to_hf(ollama_tag: str) -> str:
+    """Return the HF repo id for an Ollama tag. Raises if unmapped."""
+    if ollama_tag in OLLAMA_TO_HF:
+        return OLLAMA_TO_HF[ollama_tag]
+    raise ValueError(
+        f"no HF mapping for ollama tag {ollama_tag!r}. "
+        f"Known: {sorted(OLLAMA_TO_HF)}. Pass --hf-model <repo-id> explicitly."
+    )
+
+
+# --- llama.cpp clone management -------------------------------------------
+
+def ensure_llama_cpp() -> Path:
+    """Clone llama.cpp on first use (idempotent). Returns the local dir.
+
+    A shallow clone is enough — we only need the Python conversion script.
+    Adds ~50 MB to disk (one-time). Future updates can be pulled with
+    `git -C <dir> pull --ff-only`; we don't auto-update here to avoid
+    surprise behaviour changes mid-training-run.
+    """
+    if LLAMA_CPP_DIR.exists() and (LLAMA_CPP_DIR / "convert_hf_to_gguf.py").exists():
+        return LLAMA_CPP_DIR
+    LLAMA_CPP_DIR.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--depth=1", LLAMA_CPP_REPO, str(LLAMA_CPP_DIR)],
+        check=True,
+    )
+    return LLAMA_CPP_DIR
 
 
 # --- HF base-model fetch + verification ----------------------------------

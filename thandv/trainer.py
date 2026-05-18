@@ -1,34 +1,39 @@
 """Background training daemon.
 
-The trainer reads training examples from a local queue, runs LoRA fine-tuning
-on the local base model, evaluates against a chosen suite, and promotes the
-new adapter **only if the eval pass rate improves**. Everything beyond data
-ingestion is fully local; the binary stays self-sufficient at runtime.
-
-v0.2.x ships the daemon scaffolding with a *stub* training step (no real
-weight updates yet). The wiring — queue mgmt, eval gate, adapter promotion,
-state, logs, pause/resume, idempotent restart — is real and exercised by
-tests. The actual LoRA training step plugs in at v0.4 once the trainer
-dependency (Unsloth on CUDA / MLX-LM on Apple Silicon) lands.
+The trainer reads training examples from a local queue, runs real LoRA
+fine-tuning on the local base model via `thandv.training_backend`,
+evaluates the resulting adapter, and promotes it **only if the eval pass
+rate improves**. Everything beyond data ingestion is fully local.
 
 The daemon is paranoid by design:
 - Eval failure (e.g. Ollama down) skips the tick rather than discarding work.
-- A baseline eval is measured once and stored; subsequent adapters must
-  *beat* it to be promoted.
-- Adapters that don't beat the baseline are deleted; their source queue file
-  is moved to `processed/` regardless so we don't reprocess it forever.
+- Train failure (e.g. MLX-LM crashes mid-run) leaves the queue file in
+  place so the next tick can retry.
+- A baseline eval is measured once against the current `active_ollama_model`
+  and stored; subsequent adapters must *beat* it to be promoted.
+- Adapters that don't beat the baseline are unregistered from Ollama
+  (`ollama rm`) and their on-disk artifacts removed. Their source queue
+  file moves to `processed/` regardless to prevent loops.
+
+State migration: TrainerState gained `active_ollama_model` (what to eval
+against) and `hf_base_model` (HF repo id for training) in v0.4.1. Old
+state files load without these fields; the trainer falls back to
+`config.model` and a default HF mapping when they're empty.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from thandv import training_backend as _tb
 from thandv.config import THANDV_HOME
 from thandv.evals import run_suite
 
@@ -50,6 +55,16 @@ class TrainerState:
     best_eval_pass_rate: float = 0.0
     baseline_measured: bool = False
     active_adapter: str = ""
+    # The Ollama model the trainer currently considers best; starts as the
+    # untouched base (e.g. "qwen2.5-coder:7b") and gets replaced with
+    # "thandv-<adapter_id>" when an adapter is promoted. Empty means
+    # "fall back to whatever caller passed as base_model".
+    active_ollama_model: str = ""
+    # HF repo id of the training base, e.g. "Qwen/Qwen2.5-Coder-7B". Set by
+    # `thandv train enable`; the trainer reads it to find the local HF
+    # safetensors for LoRA. Empty means "infer from the Ollama tag via the
+    # default mapping table in training_backend".
+    hf_base_model: str = ""
     paused: bool = False
 
 
@@ -111,30 +126,74 @@ def _pop_queue() -> Path | None:
     return files[0] if files else None
 
 
-# --- Training (currently stubbed) -----------------------------------------
+# --- Training -------------------------------------------------------------
 
-def _stub_train(queue_file: Path) -> str:
-    """Pretend to train a LoRA on the queue file. Returns an adapter id.
+def _train_lora(
+    queue_file: Path,
+    base_ollama_model: str,
+    *,
+    hf_base_repo: str | None = None,
+) -> tuple[str, str]:
+    """Run real LoRA training + GGUF export + Ollama registration.
 
-    v0.4 replaces this with a real Unsloth / MLX-LM call. The interface
-    stays the same: receive a queue file, return an adapter id, with the
-    adapter persisted under ADAPTERS_DIR / f"{adapter_id}.json" (today as a
-    marker, later as the actual safetensors plus a manifest).
+    Returns ``(adapter_id, new_ollama_model_name)``. Raises on any
+    sub-step failure — caller decides whether that's "skip this tick"
+    (transient) or worse.
+
+    Side effects:
+    - Picks the strongest available `TrainerBackend`.
+    - Trains a LoRA in `ADAPTERS_DIR / <adapter_id> / adapter/`.
+    - Fuses + exports `ADAPTERS_DIR / <adapter_id> / merged.gguf`.
+    - Writes an Ollama Modelfile and runs `ollama create thandv-<id>`.
     """
     _ensure_dirs()
-    adapter_id = f"adapter-{time.time_ns()}"
-    (ADAPTERS_DIR / f"{adapter_id}.json").write_text(
-        json.dumps(
-            {
-                "adapter_id": adapter_id,
-                "source_queue_file": queue_file.name,
-                "trained_at": _now(),
-                "stub": True,
-            },
-            indent=2,
+    backend = _tb.pick_backend()
+    if backend is None:
+        raise RuntimeError(
+            "no training backend available. Run: "
+            "pip install thandv[train-mlx] && thandv train enable"
         )
+
+    # Resolve the HF base model dir.
+    hf_repo = hf_base_repo or _tb.ollama_to_hf(base_ollama_model)
+    base_hf_dir = _tb.base_model_dir(hf_repo)
+    if not base_hf_dir.exists() or not any(base_hf_dir.iterdir()):
+        raise FileNotFoundError(
+            f"HF base model not downloaded: {base_hf_dir}. "
+            "Run: thandv train enable"
+        )
+
+    adapter_id = f"adapter-{time.time_ns()}"
+    out_dir = ADAPTERS_DIR / adapter_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: LoRA train. Adapter weights land under out_dir/adapter/.
+    backend.train(base_hf_dir, queue_file, out_dir)
+
+    # Step 2: Merge + export GGUF. Single GGUF file at out_dir/merged.gguf.
+    gguf_path = out_dir / "merged.gguf"
+    backend.merge_to_gguf(base_hf_dir, out_dir / "adapter", gguf_path)
+
+    # Step 3: Modelfile + ollama create.
+    modelfile = out_dir / "Modelfile"
+    modelfile.write_text(f"FROM {gguf_path.resolve()}\n")
+    new_model_name = f"thandv-{adapter_id}"
+    subprocess.run(
+        ["ollama", "create", new_model_name, "-f", str(modelfile)],
+        check=True,
     )
-    return adapter_id
+
+    return adapter_id, new_model_name
+
+
+def _discard_adapter(adapter_id: str, ollama_model: str) -> None:
+    """Clean up everything created by a discarded adapter run.
+
+    Best-effort: `ollama rm` may fail if the model wasn't actually
+    registered (e.g. we crashed mid-create); ignore.
+    """
+    subprocess.run(["ollama", "rm", ollama_model], check=False, capture_output=True)
+    shutil.rmtree(ADAPTERS_DIR / adapter_id, ignore_errors=True)
 
 
 # --- Tick: one full train → eval → promote cycle --------------------------
@@ -146,21 +205,27 @@ def _log_outcome(outcome: dict) -> dict:
     return outcome
 
 
-def tick(model: str, *, dry_run: bool = False) -> dict:
+def tick(base_model: str, *, dry_run: bool = False) -> dict:
     """Run one training iteration.
 
-    Returns a dict describing what happened: action ∈ {baseline, skip,
-    promote, discard}, plus context.
+    `base_model` is the Ollama tag of the untouched base (e.g.
+    "qwen2.5-coder:7b"). The trainer evaluates against
+    `state.active_ollama_model` if a promoted adapter exists, else against
+    `base_model`. Returns a dict describing what happened:
+    action ∈ {baseline, skip, promote, discard}.
     """
     _ensure_dirs()
     state = load_state()
     state.last_tick_at = _now()
     state.ticks_completed += 1
 
-    # Establish the no-adapter baseline once.
+    # What model are we currently treating as best?
+    current_best_model = state.active_ollama_model or base_model
+
+    # Baseline eval: measured once at the start, against the active model.
     if not state.baseline_measured:
         try:
-            baseline = _run_eval(model)
+            baseline = _run_eval(current_best_model)
         except Exception as e:
             save_state(state)
             return _log_outcome(
@@ -169,9 +234,12 @@ def tick(model: str, *, dry_run: bool = False) -> dict:
         state.best_eval_pass_rate = baseline
         state.last_eval_pass_rate = baseline
         state.baseline_measured = True
+        # Lock in the active_ollama_model so we keep evaluating consistently.
+        if not state.active_ollama_model:
+            state.active_ollama_model = base_model
         save_state(state)
         return _log_outcome(
-            {"action": "baseline", "pass_rate": baseline, "at": _now()}
+            {"action": "baseline", "pass_rate": baseline, "model": current_best_model, "at": _now()}
         )
 
     queue_file = _pop_queue()
@@ -190,13 +258,32 @@ def tick(model: str, *, dry_run: bool = False) -> dict:
             }
         )
 
-    adapter_id = _stub_train(queue_file)
-
+    # Step 1: Train. Failures here leave the queue file in place so the
+    # next tick can retry — could be transient (mlx OOM, disk full, etc.).
     try:
-        new_rate = _run_eval(model)
+        adapter_id, new_ollama_model = _train_lora(
+            queue_file,
+            base_model,
+            hf_base_repo=state.hf_base_model or None,
+        )
     except Exception as e:
-        # Eval unavailable → can't gate. Discard adapter, keep queue file.
-        (ADAPTERS_DIR / f"{adapter_id}.json").unlink(missing_ok=True)
+        save_state(state)
+        return _log_outcome(
+            {
+                "action": "skip",
+                "reason": f"train failed: {type(e).__name__}: {e}",
+                "queue_file": queue_file.name,
+                "at": _now(),
+            }
+        )
+
+    # Step 2: Eval the new model against the same suite as baseline.
+    try:
+        new_rate = _run_eval(new_ollama_model)
+    except Exception as e:
+        # Couldn't gate. Clean up the new model + adapter dir, keep the
+        # queue file in place for a retry.
+        _discard_adapter(adapter_id, new_ollama_model)
         save_state(state)
         return _log_outcome(
             {
@@ -210,14 +297,22 @@ def tick(model: str, *, dry_run: bool = False) -> dict:
     state.last_eval_pass_rate = new_rate
     improved = new_rate > state.best_eval_pass_rate
     if improved:
+        # Promote: remember the new model + adapter; rotate the old active
+        # adapter out (but don't `ollama rm` the base — only thandv-<id>
+        # adapters get cleaned up here).
+        old_active_adapter = state.active_adapter
+        old_active_model = state.active_ollama_model
         state.best_eval_pass_rate = new_rate
         state.active_adapter = adapter_id
+        state.active_ollama_model = new_ollama_model
         action = "promote"
+        if old_active_adapter and old_active_model and old_active_model.startswith("thandv-"):
+            _discard_adapter(old_active_adapter, old_active_model)
     else:
-        (ADAPTERS_DIR / f"{adapter_id}.json").unlink(missing_ok=True)
+        _discard_adapter(adapter_id, new_ollama_model)
         action = "discard"
 
-    # Move queue file out regardless so we don't loop on the same file.
+    # Consume the queue file regardless.
     queue_file.rename(PROCESSED_DIR / queue_file.name)
     save_state(state)
 
@@ -225,6 +320,7 @@ def tick(model: str, *, dry_run: bool = False) -> dict:
         {
             "action": action,
             "adapter_id": adapter_id,
+            "ollama_model": new_ollama_model,
             "queue_file": queue_file.name,
             "pass_rate": new_rate,
             "best_pass_rate": state.best_eval_pass_rate,
@@ -233,9 +329,9 @@ def tick(model: str, *, dry_run: bool = False) -> dict:
     )
 
 
-def _run_eval(model: str) -> float:
-    """Return the pass rate (0.0–1.0) of the smoke suite for `model`."""
-    results = run_suite("smoke", model=model)
+def _run_eval(model: str, suite: str = "smoke") -> float:
+    """Return the pass rate (0.0–1.0) of `suite` for `model`."""
+    results = run_suite(suite, model=model)
     if not results:
         return 0.0
     return sum(1 for r in results if r.passed) / len(results)
