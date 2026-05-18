@@ -118,10 +118,13 @@ def get_public_dataset(name: str) -> PublicDataset:
 def sample_public_dataset(name: str, n: int, *, seed: int = 0) -> list[dict]:
     """Pull N reproducibly-sampled examples in {prompt, completion} shape.
 
-    Lazy `datasets` import with a clear install hint if missing. Cache dir
-    follows HF's default (~/.cache/huggingface) — we don't override here so
+    Validate the dataset name *first* (cheap, no deps) — that way an
+    unknown name surfaces the right error even when `datasets` isn't
+    installed. Then lazy-import `datasets` with a clear install hint if
+    missing. Cache dir follows HF's default (~/.cache/huggingface) so
     multiple training projects share the same cache.
     """
+    dataset = get_public_dataset(name)  # raises ValueError on unknown
     try:
         from datasets import load_dataset  # type: ignore
     except ImportError as e:
@@ -129,7 +132,6 @@ def sample_public_dataset(name: str, n: int, *, seed: int = 0) -> list[dict]:
             "datasets not installed. Run: pip install thandv[eval]"
         ) from e
 
-    dataset = get_public_dataset(name)
     ds = load_dataset(dataset.hf_repo, split=dataset.split)
     total = len(ds)
     k = min(n, total)
