@@ -305,8 +305,98 @@ def cmd_train(args: argparse.Namespace) -> int:
         print("trainer stopped.")
         return 0
 
+    if action == "enable":
+        return _cmd_train_enable(args, cfg)
+
+    if action == "backends":
+        return _cmd_train_backends()
+
     print(f"unknown train action: {action}", file=sys.stderr)
     return 2
+
+
+def _cmd_train_backends() -> int:
+    """List training backends and their availability on this host."""
+    from thandv import training_backend as tb
+    for b in tb.BACKENDS:
+        avail = "available" if b.is_available() else "not available"
+        print(f"{b.name:12s} {avail}")
+    picked = tb.pick_backend()
+    print(f"\nactive: {picked.name if picked else '(none — install: pip install thandv[train-mlx])'}")
+    return 0
+
+
+def _cmd_train_enable(args: argparse.Namespace, cfg: Config) -> int:
+    """Set up the LoRA training pipeline end-to-end.
+
+    Steps:
+      1. Pick the best available backend (or tell the user to install one).
+      2. Resolve a HuggingFace base-model id from `--hf-model` or default.
+      3. Download the HF base model (cached under ~/.thandv/training/base/).
+      4. Run a tiny verification training step to prove the pipeline works.
+    """
+    from thandv import training_backend as tb
+
+    backend = tb.pick_backend()
+    if backend is None:
+        print(
+            "no training backend available. On Apple Silicon, install:\n"
+            "    pip install thandv[train-mlx]",
+            file=sys.stderr,
+        )
+        return 2
+
+    hf_model = args.hf_model or _default_hf_model_for(cfg.model)
+    print(f"backend:    {backend.name}")
+    print(f"hf model:   {hf_model}")
+
+    target = tb.base_model_dir(hf_model)
+    if target.exists() and any(target.iterdir()):
+        print(f"base model: already cached at {target}")
+    else:
+        print(f"base model: downloading to {target} (this can take a while)...")
+        try:
+            tb.fetch_hf_base_model(hf_model)
+        except Exception as e:
+            print(f"download failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 2
+        print(f"base model: downloaded to {target}")
+
+    if args.skip_verify:
+        print("(skipping verification training run per --skip-verify)")
+        return 0
+
+    print("verification: running a 1-iter training step (proves pipeline works)...")
+    try:
+        info = tb.verify_training_setup(backend, target)
+    except Exception as e:
+        print(f"verification failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    print(f"verification: OK ({info})")
+    return 0
+
+
+def _default_hf_model_for(ollama_tag: str) -> str:
+    """Map an Ollama tag like 'qwen2.5-coder:7b' to its HF Hub repo id.
+
+    Trainer needs HF format; Ollama only ships GGUF. The mapping is hardcoded
+    for the models in our `runtime.MODEL_LADDER` — extend as we adopt more.
+    """
+    table = {
+        "qwen2.5-coder:7b":  "Qwen/Qwen2.5-Coder-7B",
+        "qwen2.5-coder:14b": "Qwen/Qwen2.5-Coder-14B",
+        "qwen2.5-coder:32b": "Qwen/Qwen2.5-Coder-32B",
+        "qwen2.5-coder:3b":  "Qwen/Qwen2.5-Coder-3B",
+        "qwen3-coder:30b":   "Qwen/Qwen3-Coder-30B-A3B",
+        "qwen3-coder:14b":   "Qwen/Qwen3-Coder-14B",
+        "llama3.2:3b":       "meta-llama/Llama-3.2-3B",
+    }
+    if ollama_tag in table:
+        return table[ollama_tag]
+    raise ValueError(
+        f"no HF mapping for ollama tag '{ollama_tag}'. "
+        f"Pass --hf-model <hf-repo-id> explicitly."
+    )
 
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -384,6 +474,20 @@ def main(argv: list[str] | None = None) -> int:
     train_sub.add_parser("stop", help="send SIGTERM to a running daemon")
     p_run = train_sub.add_parser("run", help="run the daemon in the foreground")
     p_run.add_argument("--interval", type=int, default=300, help="seconds between ticks")
+    train_sub.add_parser("backends", help="list training backends and which is active")
+    p_enable = train_sub.add_parser(
+        "enable",
+        help="set up the LoRA training pipeline (pulls HF base model + verifies)",
+    )
+    p_enable.add_argument(
+        "--hf-model",
+        help="HuggingFace repo id of the base model (default: inferred from config.model)",
+    )
+    p_enable.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="skip the tiny verification training run",
+    )
     p_train.set_defaults(func=cmd_train)
 
     p_config = sub.add_parser("config", help="show or set config keys")

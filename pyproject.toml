@@ -18,6 +18,12 @@ dependencies = [
 build = ["pyinstaller>=6.6"]
 dev = ["pytest>=8", "ruff>=0.5"]
 eval = ["datasets>=2.18"]
+# Apple Silicon training backend. Optional because MLX is macOS-arm64 only
+# and ~400 MB installed; users without it still get the rest of thandv.
+train-mlx = [
+    "mlx-lm>=0.20",
+    "huggingface-hub>=0.24",
+]
 
 [project.scripts]
 thandv = "thandv.cli:main"

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from thandv import config, evals as eval_mod, memory, rag, trainer
+from thandv import config, evals as eval_mod, memory, rag, trainer, training_backend
 
 
 @pytest.fixture
@@ -54,6 +54,11 @@ def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     evals_dir = home / "evals"
     evals_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(eval_mod, "BEST_RECORDS_PATH", evals_dir / "best.json")
+
+    base_models = training / "base"
+    base_models.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(training_backend, "TRAINING_DIR", training)
+    monkeypatch.setattr(training_backend, "BASE_MODELS_DIR", base_models)
 
     return home
 

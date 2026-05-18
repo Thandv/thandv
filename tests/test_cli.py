@@ -300,3 +300,135 @@ def test_chat_errors_when_ollama_down(thandv_home, monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "ollama" in err.lower()
+
+
+# --- train backends / enable ----------------------------------------------
+
+def test_train_backends_lists_all(thandv_home, capsys):
+    rc = main(["train", "backends"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mlx-lm" in out
+    assert "hf-peft" in out
+    assert "active:" in out
+
+
+def test_train_enable_refuses_when_no_backend(thandv_home, monkeypatch, capsys):
+    from thandv import training_backend as tb
+
+    monkeypatch.setattr(tb, "pick_backend", lambda: None)
+    rc = main(["train", "enable", "--hf-model", "x/y"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no training backend" in err.lower()
+    assert "thandv[train-mlx]" in err
+
+
+def test_train_enable_uses_default_hf_mapping(thandv_home, monkeypatch, capsys):
+    """`train enable` without --hf-model maps config.model → HF repo id."""
+    from thandv import training_backend as tb
+    from thandv.config import Config
+
+    Config(model="qwen2.5-coder:7b").save()
+
+    captured = {}
+
+    class FB:
+        name = "fake"
+
+        def is_available(self):
+            return True
+
+    monkeypatch.setattr(tb, "pick_backend", lambda: FB())
+
+    def fake_fetch(model_id):
+        captured["model_id"] = model_id
+        d = tb.BASE_MODELS_DIR / model_id.replace("/", "_")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "marker").write_text("x")
+        return d
+
+    monkeypatch.setattr(tb, "fetch_hf_base_model", fake_fetch)
+    monkeypatch.setattr(tb, "verify_training_setup", lambda b, p: {"ok": True})
+
+    rc = main(["train", "enable"])
+    assert rc == 0
+    assert captured["model_id"] == "Qwen/Qwen2.5-Coder-7B"
+
+
+def test_train_enable_explicit_hf_model_wins(thandv_home, monkeypatch, capsys):
+    from thandv import training_backend as tb
+
+    captured = {}
+
+    class FB:
+        name = "fake"
+
+        def is_available(self):
+            return True
+
+    monkeypatch.setattr(tb, "pick_backend", lambda: FB())
+
+    def fake_fetch(model_id):
+        captured["model_id"] = model_id
+        d = tb.BASE_MODELS_DIR / model_id.replace("/", "_")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "marker").write_text("x")
+        return d
+
+    monkeypatch.setattr(tb, "fetch_hf_base_model", fake_fetch)
+    monkeypatch.setattr(tb, "verify_training_setup", lambda b, p: {"ok": True})
+
+    rc = main(["train", "enable", "--hf-model", "my-org/my-model"])
+    assert rc == 0
+    assert captured["model_id"] == "my-org/my-model"
+
+
+def test_train_enable_skip_verify_does_not_call_verifier(thandv_home, monkeypatch, capsys):
+    from thandv import training_backend as tb
+
+    class FB:
+        name = "fake"
+
+        def is_available(self):
+            return True
+
+    monkeypatch.setattr(tb, "pick_backend", lambda: FB())
+
+    def fake_fetch(model_id):
+        d = tb.BASE_MODELS_DIR / model_id.replace("/", "_")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "marker").write_text("x")
+        return d
+
+    monkeypatch.setattr(tb, "fetch_hf_base_model", fake_fetch)
+
+    def boom(*a, **kw):
+        raise AssertionError("verify must NOT be called with --skip-verify")
+
+    monkeypatch.setattr(tb, "verify_training_setup", boom)
+
+    rc = main(["train", "enable", "--hf-model", "x/y", "--skip-verify"])
+    assert rc == 0
+
+
+def test_train_enable_reports_fetch_failure_cleanly(thandv_home, monkeypatch, capsys):
+    from thandv import training_backend as tb
+
+    class FB:
+        name = "fake"
+
+        def is_available(self):
+            return True
+
+    monkeypatch.setattr(tb, "pick_backend", lambda: FB())
+
+    def boom_fetch(model_id):
+        raise RuntimeError("network unreachable")
+
+    monkeypatch.setattr(tb, "fetch_hf_base_model", boom_fetch)
+    rc = main(["train", "enable", "--hf-model", "x/y"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "download failed" in err.lower()
+    assert "network unreachable" in err.lower()
