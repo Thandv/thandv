@@ -25,6 +25,9 @@ If you're new, read them in this order:
 - **[`../research/SELF_IMPROVEMENT.md`](../research/SELF_IMPROVEMENT.md)** —
   honest take on what self-improvement does and doesn't mean for a local
   open-weights model. The philosophy that constrains the roadmap.
+- **[`../research/V0.4_DESIGN.md`](../research/V0.4_DESIGN.md)** —
+  open design memo for the real LoRA training pipeline (trainer backend,
+  HF↔GGUF round-trip, adapter serving, hardware budget on M2 16 GB).
 - **[`../NOT_FINANCIAL_ADVICE.md`](../NOT_FINANCIAL_ADVICE.md)** — the
   canonical statement of the `finance` persona's scope, capability
   honesty, and legal frame. Read before using the finance persona.

@@ -126,7 +126,7 @@ they're stable):
 | `qwen2.5-coder:7b`   | `writer`               | **6/6 (100%)** | M2 16 GB |
 | `qwen2.5-coder:7b`   | `finance`              | **5/6 (83.3%)** — fails `refuse-stock-pick` on the 7B; honest signal the trainer can target | M2 16 GB |
 | `qwen2.5-coder:7b`   | `mbpp --limit 10`      | **9/10 (90%)** after prompt fix (was 0/3 on those same early tasks before) | M2 16 GB |
-| `qwen2.5-coder:7b`   | `mbpp` (full 257)      | pending re-baseline after the prompt fix (the initial unfixed run scored 19/257 = 7.4% because the prompt didn't carry the expected function name) | M2 16 GB |
+| `qwen2.5-coder:7b`   | `mbpp` (full 257)      | **206/257 (80.2%)** after the prompt fix — tracks the published pass@1 for this model. (Pre-fix run scored 7.4% because the prompt didn't carry the expected function name.) | M2 16 GB |
 
 **Sandbox honesty.** The HumanEval verifier runs model-generated Python in
 a subprocess with a 10 s timeout. That's enough for research; do *not*

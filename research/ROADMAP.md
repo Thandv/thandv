@@ -40,7 +40,8 @@ may use free internet sources of good quality.**
       to `~/.thandv/datasets/`, subprocess-sandboxed verifier with
       timeout. Full baseline on `qwen2.5-coder:7b`: **139/164 = 84.8% pass@1**.
 - [x] MBPP integration: same pattern as HumanEval, sanitized config,
-      `test_list`-based verifier. Full baseline not yet recorded (slow).
+      `test_list`-based verifier. Full baseline on `qwen2.5-coder:7b`:
+      **206/257 = 80.2% pass@1** (after the prompt fix in v0.2.4.1).
 - [ ] Small in-repo SWE-Bench-lite
 - [x] Writer eval suite: 6 hand-coded prose tasks with *structural*
       heuristic verifiers (heading count, bullet count, sentence bounds,
