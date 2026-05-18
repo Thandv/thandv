@@ -177,6 +177,102 @@ def test_run_suite_handles_agent_exception(thandv_home, monkeypatch):
 
 # --- Suite definition object ----------------------------------------------
 
+# --- Regression tracking --------------------------------------------------
+
+def _results_with(passes: int, total: int) -> list:
+    return [
+        EvalResult(
+            task_id=f"t{i}", suite="x", model="m", persona="code",
+            reply="r", passed=(i < passes), secs=0.1,
+        )
+        for i in range(total)
+    ]
+
+
+def test_update_best_first_run_is_always_an_improvement(thandv_home):
+    prev, cur, improved = eval_mod.update_best_if_improved(
+        "smoke", "code", _results_with(2, 3), model="m"
+    )
+    assert prev is None
+    assert cur == pytest.approx(2 / 3)
+    assert improved is True
+    rec = eval_mod.get_best("smoke", "code")
+    assert rec is not None
+    assert rec["pass_rate"] == pytest.approx(2 / 3)
+    assert rec["n_passed"] == 2 and rec["n_total"] == 3
+
+
+def test_update_best_better_run_replaces_record(thandv_home):
+    eval_mod.update_best_if_improved("smoke", "code", _results_with(2, 3), model="m1")
+    prev, cur, improved = eval_mod.update_best_if_improved(
+        "smoke", "code", _results_with(3, 3), model="m2"
+    )
+    assert prev == pytest.approx(2 / 3)
+    assert cur == pytest.approx(1.0)
+    assert improved is True
+    rec = eval_mod.get_best("smoke", "code")
+    assert rec["model"] == "m2"  # the better run's metadata won
+
+
+def test_update_best_worse_run_keeps_record(thandv_home):
+    eval_mod.update_best_if_improved("smoke", "code", _results_with(3, 3), model="m1")
+    prev, cur, improved = eval_mod.update_best_if_improved(
+        "smoke", "code", _results_with(1, 3), model="m2"
+    )
+    assert prev == pytest.approx(1.0)
+    assert cur == pytest.approx(1 / 3)
+    assert improved is False
+    rec = eval_mod.get_best("smoke", "code")
+    assert rec["model"] == "m1"  # unchanged
+
+
+def test_update_best_keyed_by_suite_and_persona(thandv_home):
+    """Same suite, different persona, must record separately."""
+    eval_mod.update_best_if_improved("smoke", "code", _results_with(3, 3), model="m")
+    eval_mod.update_best_if_improved("smoke", "writer", _results_with(1, 3), model="m")
+    assert eval_mod.get_best("smoke", "code")["pass_rate"] == pytest.approx(1.0)
+    assert eval_mod.get_best("smoke", "writer")["pass_rate"] == pytest.approx(1 / 3)
+
+
+def test_update_best_empty_results_is_a_noop(thandv_home):
+    prev, cur, improved = eval_mod.update_best_if_improved("smoke", "code", [], model="m")
+    assert prev is None and cur == 0.0 and improved is False
+    assert eval_mod.get_best("smoke", "code") is None
+
+
+def test_save_load_records_roundtrip(thandv_home):
+    eval_mod.save_best_records({"a|b": {"pass_rate": 0.42, "n_passed": 21, "n_total": 50}})
+    loaded = eval_mod.load_best_records()
+    assert loaded["a|b"]["pass_rate"] == pytest.approx(0.42)
+
+
+def test_load_best_records_handles_corrupt_file(thandv_home):
+    eval_mod.BEST_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    eval_mod.BEST_RECORDS_PATH.write_text("not json")
+    # Should gracefully return {} rather than blowing up the whole eval.
+    assert eval_mod.load_best_records() == {}
+
+
+def test_format_regression_line_first_run():
+    line = eval_mod.format_regression_line(None, 0.5, True)
+    assert "first recorded run" in line
+    assert "50.0%" in line
+
+
+def test_format_regression_line_improvement():
+    line = eval_mod.format_regression_line(0.5, 0.6, True)
+    assert "NEW BEST" in line
+    assert "50.0%" in line and "60.0%" in line
+    assert "+10.0pp" in line
+
+
+def test_format_regression_line_regression():
+    line = eval_mod.format_regression_line(0.8, 0.5, False)
+    assert "NEW BEST" not in line
+    assert "best stays 80.0%" in line
+    assert "-30.0pp" in line
+
+
 def test_eval_dataclasses():
     task = EvalTask(id="x", prompt="p", verify=lambda r: True)
     suite = EvalSuite(name="t", tasks=[task])

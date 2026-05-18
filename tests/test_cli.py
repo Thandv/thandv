@@ -86,6 +86,95 @@ def test_eval_uses_suite_default_persona_not_config(thandv_home, monkeypatch, ca
     assert "persona=finance" in capsys.readouterr().out
 
 
+def test_eval_show_best_empty(thandv_home, capsys):
+    rc = main(["eval", "--show-best"])
+    assert rc == 0
+    assert "no best records yet" in capsys.readouterr().out
+
+
+def test_eval_show_best_with_records(thandv_home, capsys):
+    from thandv import evals as eval_mod
+    eval_mod.save_best_records({
+        "smoke|code": {
+            "pass_rate": 0.85, "n_passed": 85, "n_total": 100,
+            "at": "2026-05-18T00:00:00+00:00", "model": "fake-7b", "persona": "code",
+        },
+    })
+    rc = main(["eval", "--show-best"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "smoke|code" in out
+    assert "85.0%" in out
+    assert "fake-7b" in out
+
+
+def test_eval_full_run_updates_best(thandv_home, monkeypatch, capsys):
+    """A full (no --limit) eval run records its result as a new best."""
+    from thandv import cli, evals as eval_mod
+    from thandv.config import Config
+
+    Config(model="fake-model").save()
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+
+    fake_results = [
+        eval_mod.EvalResult(task_id="t", suite="smoke", model="fake-model",
+                            persona="code", reply="ok", passed=True, secs=0.1),
+    ]
+    monkeypatch.setattr(cli, "run_suite", lambda *a, **kw: fake_results)
+    monkeypatch.setattr(eval_mod, "run_suite", lambda *a, **kw: fake_results)
+
+    rc = main(["eval", "smoke"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "first recorded run" in out
+    assert eval_mod.get_best("smoke", "code") is not None
+
+
+def test_eval_limit_run_does_not_update_best(thandv_home, monkeypatch, capsys):
+    """A --limit run is a sample and must NOT touch the best record."""
+    from thandv import cli, evals as eval_mod
+    from thandv.config import Config
+
+    Config(model="fake-model").save()
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+
+    fake_results = [
+        eval_mod.EvalResult(task_id="t", suite="smoke", model="fake-model",
+                            persona="code", reply="ok", passed=True, secs=0.1),
+    ]
+    monkeypatch.setattr(cli, "run_suite", lambda *a, **kw: fake_results)
+    monkeypatch.setattr(eval_mod, "run_suite", lambda *a, **kw: fake_results)
+
+    rc = main(["eval", "smoke", "--limit", "1"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "first recorded run" not in out
+    assert "NEW BEST" not in out
+    assert eval_mod.get_best("smoke", "code") is None
+
+
+def test_eval_no_update_best_flag_disables_recording(thandv_home, monkeypatch, capsys):
+    from thandv import cli, evals as eval_mod
+    from thandv.config import Config
+
+    Config(model="fake-model").save()
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+
+    fake_results = [
+        eval_mod.EvalResult(task_id="t", suite="smoke", model="fake-model",
+                            persona="code", reply="ok", passed=True, secs=0.1),
+    ]
+    monkeypatch.setattr(cli, "run_suite", lambda *a, **kw: fake_results)
+    monkeypatch.setattr(eval_mod, "run_suite", lambda *a, **kw: fake_results)
+
+    rc = main(["eval", "smoke", "--no-update-best"])
+    assert rc == 0
+    assert eval_mod.get_best("smoke", "code") is None
+
+
 def test_eval_explicit_persona_still_overrides(thandv_home, monkeypatch, capsys):
     """`thandv eval finance --persona code` should still pass `code` through."""
     from thandv import cli, evals as eval_mod

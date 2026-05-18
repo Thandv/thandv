@@ -91,13 +91,29 @@ Diagnostic snapshot. Reports:
 - Active persona
 - `thandv` version
 
-### `thandv eval [SUITE] [--persona NAME] [--limit N] [--list]`
+### `thandv eval [SUITE] [--persona NAME] [--limit N] [--list] [--show-best] [--no-update-best]`
 
 Runs an eval suite against the current model + persona. Results land in
 `~/.thandv/evals/<suite>-<unix-ts>.json`.
 
 `--limit N` runs only the first N tasks. `--list` shows available suites
 and personas, then exits.
+
+**Regression tracking.** After a *full* run (no `--limit`), `thandv eval`
+compares against the best pass rate recorded for `(suite, persona)` in
+`~/.thandv/evals/best.json` and prints a one-liner:
+
+```
+$ thandv eval smoke
+...
+passed 3/3 (100.0%)
+vs best: 100.0% -> 100.0% (+0.0pp) NEW BEST   # first run sets the bar
+```
+
+`--show-best` prints the current best record for every (suite, persona)
+pair and exits. `--no-update-best` runs the eval without touching the
+record file (use it when you're debugging or know the run isn't
+representative).
 
 Available suites:
 

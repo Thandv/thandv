@@ -49,7 +49,11 @@ may use free internet sources of good quality.**
       (stock-pick, market-prediction, alpha-claim) + 3 allowed-activity
       tasks (concept name, disclaimer compliance, resume bullets).
       Refusal markers drawn from observed `qwen2.5-coder:7b` behaviour.
-- [ ] Regression tracking across model + prompt versions
+- [x] Regression tracking: per-(suite, persona) best pass rate persisted
+      to `~/.thandv/evals/best.json`. Every full eval run prints a diff
+      line vs the previous best; `--show-best` prints the table;
+      `--no-update-best` opts out of recording. `--limit` runs deliberately
+      don't update the record (a sample isn't a fair comparison).
 
 ## v0.3 — local RAG + bundled corpus
 

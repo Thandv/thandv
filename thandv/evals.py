@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -669,3 +670,90 @@ def summarise(results: list[EvalResult]) -> str:
     n_passed = sum(1 for r in results if r.passed)
     pct = 100 * n_passed / len(results) if results else 0.0
     return f"passed {n_passed}/{len(results)} ({pct:.1f}%)"
+
+
+# --- Regression tracking --------------------------------------------------
+# Per-(suite, persona) best pass rate persisted to disk so each eval run
+# can print a diff line. Only updated on *full* runs (no --limit), because
+# a 10-task sample's 100% would falsely "regress" a full 80% baseline.
+
+BEST_RECORDS_PATH = THANDV_HOME / "evals" / "best.json"
+
+
+def _best_key(suite: str, persona: str) -> str:
+    return f"{suite}|{persona}"
+
+
+def load_best_records() -> dict[str, dict]:
+    if not BEST_RECORDS_PATH.exists():
+        return {}
+    try:
+        return json.loads(BEST_RECORDS_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_best_records(records: dict[str, dict]) -> None:
+    BEST_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BEST_RECORDS_PATH.write_text(json.dumps(records, indent=2, sort_keys=True))
+
+
+def get_best(suite: str, persona: str) -> dict | None:
+    return load_best_records().get(_best_key(suite, persona))
+
+
+def update_best_if_improved(
+    suite: str,
+    persona: str,
+    results: list[EvalResult],
+    model: str,
+) -> tuple[float | None, float, bool]:
+    """Update the best record for (suite, persona) if this run improved on it.
+
+    Returns ``(previous_pass_rate, current_pass_rate, improved)``.
+    First-ever run is always treated as ``improved=True``.
+    """
+    n_total = len(results)
+    if n_total == 0:
+        return (None, 0.0, False)
+    n_passed = sum(1 for r in results if r.passed)
+    current = n_passed / n_total
+
+    records = load_best_records()
+    key = _best_key(suite, persona)
+    prev = records.get(key)
+    prev_rate: float | None = prev["pass_rate"] if prev else None
+
+    improved = prev_rate is None or current > prev_rate
+    if improved:
+        records[key] = {
+            "pass_rate": current,
+            "n_passed": n_passed,
+            "n_total": n_total,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": model,
+            "persona": persona,
+        }
+        save_best_records(records)
+    return (prev_rate, current, improved)
+
+
+def format_regression_line(
+    prev_rate: float | None,
+    current_rate: float,
+    improved: bool,
+) -> str:
+    """Render the one-liner shown after `thandv eval` completes."""
+    if prev_rate is None:
+        return f"first recorded run: new best = {current_rate:.1%}"
+    delta_pp = (current_rate - prev_rate) * 100
+    sign = "+" if delta_pp >= 0 else ""
+    if improved:
+        return (
+            f"vs best: {prev_rate:.1%} -> {current_rate:.1%} "
+            f"({sign}{delta_pp:.1f}pp) NEW BEST"
+        )
+    return (
+        f"vs best: best stays {prev_rate:.1%}; this run {current_rate:.1%} "
+        f"({sign}{delta_pp:.1f}pp)"
+    )
