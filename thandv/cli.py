@@ -311,8 +311,35 @@ def cmd_train(args: argparse.Namespace) -> int:
     if action == "backends":
         return _cmd_train_backends()
 
+    if action == "datasets":
+        return _cmd_train_datasets()
+
+    if action == "sample-public":
+        return _cmd_train_sample_public(args)
+
     print(f"unknown train action: {action}", file=sys.stderr)
     return 2
+
+
+def _cmd_train_datasets() -> int:
+    from thandv import training_data as td
+    for d in td.list_public_datasets():
+        print(f"{d.name:14s} [{d.license:12s}] persona={d.persona_hint:6s} {d.description}")
+    return 0
+
+
+def _cmd_train_sample_public(args: argparse.Namespace) -> int:
+    from thandv import training_data as td
+    try:
+        path = td.queue_public_dataset(args.dataset, args.n, seed=args.seed)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    print(f"queued: {path.name}  ({args.n} examples from {args.dataset!r})")
+    return 0
 
 
 def _cmd_train_backends() -> int:
@@ -467,6 +494,14 @@ def main(argv: list[str] | None = None) -> int:
     p_run = train_sub.add_parser("run", help="run the daemon in the foreground")
     p_run.add_argument("--interval", type=int, default=300, help="seconds between ticks")
     train_sub.add_parser("backends", help="list training backends and which is active")
+    train_sub.add_parser("datasets", help="list registered public datasets")
+    p_sample = train_sub.add_parser(
+        "sample-public",
+        help="sample N rows from a public dataset and queue them for training",
+    )
+    p_sample.add_argument("dataset", help="dataset name (see `train datasets`)")
+    p_sample.add_argument("--n", type=int, default=100, help="how many rows (default 100)")
+    p_sample.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
     p_enable = train_sub.add_parser(
         "enable",
         help="set up the LoRA training pipeline (pulls HF base model + verifies)",

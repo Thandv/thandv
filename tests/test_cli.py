@@ -412,6 +412,54 @@ def test_train_enable_skip_verify_does_not_call_verifier(thandv_home, monkeypatc
     assert rc == 0
 
 
+def test_train_datasets_lists_registered(thandv_home, capsys):
+    rc = main(["train", "datasets"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "codealpaca" in out
+    assert "dolly" in out
+    assert "persona=" in out
+
+
+def test_train_sample_public_unknown_dataset(thandv_home, capsys):
+    rc = main(["train", "sample-public", "no-such-dataset", "--n", "5"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown dataset" in err.lower()
+
+
+def test_train_sample_public_writes_queue(thandv_home, monkeypatch, capsys):
+    from thandv import training_data as td
+
+    def fake_queue(name, n, *, seed=0):
+        # Pretend we wrote a queue file.
+        p = td.trainer.QUEUE_DIR / f"fake-{name}-n{n}.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"prompt": "x", "completion": "y"}\n')
+        return p
+
+    monkeypatch.setattr(td, "queue_public_dataset", fake_queue)
+    rc = main(["train", "sample-public", "codealpaca", "--n", "7"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "queued:" in out
+    assert "codealpaca" in out
+    assert "7 examples" in out
+
+
+def test_train_sample_public_clear_error_without_datasets(thandv_home, monkeypatch, capsys):
+    from thandv import training_data as td
+
+    def boom(name, n, *, seed=0):
+        raise RuntimeError("datasets not installed. Run: pip install thandv[eval]")
+
+    monkeypatch.setattr(td, "queue_public_dataset", boom)
+    rc = main(["train", "sample-public", "codealpaca", "--n", "5"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "thandv[eval]" in err
+
+
 def test_train_enable_reports_fetch_failure_cleanly(thandv_home, monkeypatch, capsys):
     from thandv import training_backend as tb
 
