@@ -12,7 +12,16 @@ import requests
 from thandv import __version__, rag, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
-from thandv.evals import EvalResult, get_suite, list_suites, run_suite, summarise
+from thandv.evals import (
+    EvalResult,
+    format_regression_line,
+    get_suite,
+    list_suites,
+    load_best_records,
+    run_suite,
+    summarise,
+    update_best_if_improved,
+)
 from thandv.personas import get_persona, list_personas
 from thandv.runtime import describe, detect_host, pick_model
 
@@ -110,6 +119,19 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print("personas: " + ", ".join(list_personas()))
         return 0
 
+    if args.show_best:
+        records = load_best_records()
+        if not records:
+            print("(no best records yet)")
+            return 0
+        for key in sorted(records):
+            rec = records[key]
+            print(
+                f"{key:30s} {rec['n_passed']}/{rec['n_total']} "
+                f"({rec['pass_rate']:.1%})  model={rec['model']}  at={rec['at']}"
+            )
+        return 0
+
     ensure_dirs()
     cfg = Config.load()
     if not cfg.model:
@@ -159,6 +181,15 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
     print()
     print(summarise(results))
+
+    # Regression tracking — only on full runs, and only if not opted out.
+    # A partial (--limit) run can't fairly compare against the full baseline.
+    if not args.no_update_best and args.limit is None and results:
+        prev_rate, current_rate, improved = update_best_if_improved(
+            args.suite, effective_persona, results, cfg.model
+        )
+        print(format_regression_line(prev_rate, current_rate, improved))
+
     return 0 if all(r.passed for r in results) else 1
 
 
@@ -321,6 +352,16 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--persona", help="persona to evaluate (default: suite default)")
     p_eval.add_argument("--limit", type=int, help="max tasks to run")
     p_eval.add_argument("--list", action="store_true", help="list available suites and exit")
+    p_eval.add_argument(
+        "--show-best",
+        action="store_true",
+        help="show recorded best pass rates for each (suite, persona) and exit",
+    )
+    p_eval.add_argument(
+        "--no-update-best",
+        action="store_true",
+        help="don't update the best-record file even on a full run",
+    )
     p_eval.set_defaults(func=cmd_eval)
 
     p_ing = sub.add_parser("ingest", help="ingest a file or directory into a persona's corpus")
