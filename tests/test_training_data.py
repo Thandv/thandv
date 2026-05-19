@@ -81,11 +81,17 @@ class _FakeDS:
 
 
 def _install_fake_load_dataset(monkeypatch, rows: list[dict]) -> dict:
-    """Mock `datasets.load_dataset` to return _FakeDS(rows)."""
+    """Mock `datasets.load_dataset` to return _FakeDS(rows).
+
+    Accepts either signature `(repo, split=...)` (no config) or
+    `(repo, config, split=...)` (with config) so the same helper covers
+    both old and new dataset registrations.
+    """
     seen: dict = {}
 
-    def fake_load(repo, split=None):
+    def fake_load(repo, config=None, *, split=None):
         seen["repo"] = repo
+        seen["config"] = config
         seen["split"] = split
         return _FakeDS(rows)
 
@@ -192,3 +198,74 @@ def test_queue_public_dataset_writes_jsonl(thandv_home, monkeypatch):
 def test_queue_public_dataset_unknown_dataset(thandv_home):
     with pytest.raises(ValueError, match="unknown dataset"):
         td.queue_public_dataset("nope", 5)
+
+
+# --- Prose datasets (writer persona) ------------------------------------
+
+def test_prose_datasets_registered():
+    names = {d.name for d in td.list_public_datasets()}
+    assert {"wikitext", "tinystories"}.issubset(names)
+
+
+def test_prose_datasets_target_writer_persona():
+    for name in ("wikitext", "tinystories"):
+        d = td.get_public_dataset(name)
+        assert d.persona_hint == "writer"
+        assert d.license
+
+
+def test_wikitext_has_hf_config():
+    """Wikitext requires a config arg on HF; tinystories doesn't."""
+    assert td.get_public_dataset("wikitext").hf_config == "wikitext-2-raw-v1"
+    assert td.get_public_dataset("tinystories").hf_config is None
+
+
+def test_prose_row_to_example_splits_at_word_boundary():
+    text = "alpha beta gamma delta epsilon zeta eta theta iota kappa"
+    out = td._prose_row_to_example({"text": text})
+    assert out["prompt"].startswith("Continue the following passage")
+    # No word should be split across the boundary.
+    head = out["prompt"].split("\n\n", 1)[1]
+    tail = out["completion"]
+    assert " " not in head[-1:]
+    assert not tail.startswith(" ")
+    # Round-trips: head + " " + tail covers all the original words.
+    assert head.split() + tail.split() == text.split()
+
+
+def test_prose_row_to_example_empty_text():
+    out = td._prose_row_to_example({"text": ""})
+    assert out == {"prompt": "", "completion": ""}
+
+
+def test_prose_row_to_example_missing_text_key():
+    out = td._prose_row_to_example({})
+    assert out == {"prompt": "", "completion": ""}
+
+
+def test_prose_row_to_example_caps_long_text():
+    """Long rows get truncated to PROSE_MAX_CHARS before splitting so we
+    don't generate giant single examples."""
+    long_text = "word " * 10_000  # ~50k chars
+    out = td._prose_row_to_example({"text": long_text})
+    combined_len = len(out["prompt"]) + len(out["completion"])
+    # Prompt prefix adds ~50 chars; we should still be near PROSE_MAX_CHARS.
+    assert combined_len < td.PROSE_MAX_CHARS + 200
+
+
+def test_sample_public_dataset_wikitext_passes_config(monkeypatch):
+    seen = _install_fake_load_dataset(
+        monkeypatch, [{"text": "alpha beta gamma delta " * 5}]
+    )
+    td.sample_public_dataset("wikitext", 1)
+    assert seen["repo"] == "Salesforce/wikitext"
+    assert seen["config"] == "wikitext-2-raw-v1"
+
+
+def test_sample_public_dataset_tinystories_no_config(monkeypatch):
+    seen = _install_fake_load_dataset(
+        monkeypatch, [{"text": "Once upon a time " * 10}]
+    )
+    td.sample_public_dataset("tinystories", 1)
+    assert seen["repo"] == "roneneldan/TinyStories"
+    assert seen["config"] is None

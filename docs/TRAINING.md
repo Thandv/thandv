@@ -144,9 +144,11 @@ Currently registered datasets (extend in `thandv/training_data.py`):
 
 | Name         | License       | Persona hint | Notes                                |
 |--------------|---------------|--------------|--------------------------------------|
-| `codealpaca` | cc-by-4.0     | code         | 20k instruction-following code tasks |
-| `dolly`      | cc-by-sa-3.0  | writer       | 15k human-written instructions       |
-| `alpaca`     | cc-by-nc-4.0  | code         | 52k examples; generated with text-davinci-003 — non-commercial only, check OpenAI ToS |
+| `codealpaca`  | cc-by-4.0      | code         | 20k instruction-following code tasks |
+| `dolly`       | cc-by-sa-3.0   | writer       | 15k human-written instructions       |
+| `alpaca`      | cc-by-nc-4.0   | code         | 52k examples; generated with text-davinci-003 — non-commercial only, check OpenAI ToS |
+| `wikitext`    | cc-by-sa-3.0   | writer       | Wikitext-2 raw train split (~12 MB, ~36k rows). Continuation-style pairs: prompt = "Continue the following passage…" + head ~60%, completion = remainder. Section-heading rows produce trivial pairs; trainer is expected to skip them. |
+| `tinystories` | cdla-sharing-1.0 | writer     | Short synthetic stories (Eldan & Li 2023; ~150 MB train). Generated with GPT-3.5/4 — review upstream license before training a model you'll distribute commercially. Same continuation-style framing as `wikitext`. |
 
 Filenames in the queue carry provenance: `<unix-ts>-<dataset>-n<count>.jsonl`.
 

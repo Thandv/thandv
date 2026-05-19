@@ -34,6 +34,7 @@ class PublicDataset:
     license: str
     persona_hint: str  # which persona this most naturally fits
     row_to_example: Callable[[dict], dict]
+    hf_config: str | None = None  # set for HF datasets that require a config name
 
 
 # --- Row mappers ---------------------------------------------------------
@@ -57,6 +58,41 @@ def _dolly_row_to_example(row: dict) -> dict:
 def _alpaca_row_to_example(row: dict) -> dict:
     """Original Stanford Alpaca schema (same as CodeAlpaca's)."""
     return _codealpaca_row_to_example(row)
+
+
+# Prose-continuation framing for free-text rows. Each example becomes a
+# (head, tail) pair under a continuation prompt so the trainer's queue
+# shape ({prompt, completion}) is preserved. The cap keeps any single
+# example small enough to not dwarf training batches.
+PROSE_MAX_CHARS = 4000
+PROSE_HEAD_FRACTION = 0.6
+
+
+def _prose_row_to_example(row: dict) -> dict:
+    """Continuation-style training pair from a free-form prose row.
+
+    Takes up to `PROSE_MAX_CHARS` chars, splits at ~60% on a whitespace
+    boundary so we don't slice inside a word, and frames the head under
+    a continuation prompt. Very short / empty rows produce minimal pairs
+    -- the trainer is responsible for skipping degenerate examples.
+    """
+    text = (row.get("text") or "").strip()
+    text = text[:PROSE_MAX_CHARS]
+    if not text:
+        return {"prompt": "", "completion": ""}
+
+    target = int(len(text) * PROSE_HEAD_FRACTION)
+    cut = text.rfind(" ", 0, target + 1)
+    # If we couldn't find whitespace anywhere reasonable, fall back to
+    # the raw character index rather than refusing to split.
+    if cut == -1 or cut < target // 2:
+        cut = target
+    head = text[:cut].rstrip()
+    tail = text[cut:].lstrip()
+    return {
+        "prompt": "Continue the following passage in the same style:\n\n" + head,
+        "completion": tail,
+    }
 
 
 # --- Registry -----------------------------------------------------------
@@ -94,10 +130,39 @@ ALPACA = PublicDataset(
 )
 
 
+WIKITEXT = PublicDataset(
+    name="wikitext",
+    hf_repo="Salesforce/wikitext",
+    hf_config="wikitext-2-raw-v1",
+    split="train",
+    description="Wikitext-2 raw train split (~12 MB, ~36k rows). Wikipedia "
+                "prose; section-heading rows produce trivial pairs that the "
+                "trainer is expected to skip.",
+    license="cc-by-sa-3.0",
+    persona_hint="writer",
+    row_to_example=_prose_row_to_example,
+)
+
+TINYSTORIES = PublicDataset(
+    name="tinystories",
+    hf_repo="roneneldan/TinyStories",
+    split="train",
+    description="Short synthetic stories (Eldan & Li, 2023; ~150 MB train). "
+                "Useful as low-vocabulary narrative prose. Generated with "
+                "GPT-3.5/4 -- review the upstream license card before training "
+                "a model you intend to distribute commercially.",
+    license="cdla-sharing-1.0",
+    persona_hint="writer",
+    row_to_example=_prose_row_to_example,
+)
+
+
 PUBLIC_DATASETS: dict[str, PublicDataset] = {
     CODEALPACA.name: CODEALPACA,
     DOLLY.name: DOLLY,
     ALPACA.name: ALPACA,
+    WIKITEXT.name: WIKITEXT,
+    TINYSTORIES.name: TINYSTORIES,
 }
 
 
@@ -132,7 +197,10 @@ def sample_public_dataset(name: str, n: int, *, seed: int = 0) -> list[dict]:
             "datasets not installed. Run: pip install thandv[eval]"
         ) from e
 
-    ds = load_dataset(dataset.hf_repo, split=dataset.split)
+    if dataset.hf_config:
+        ds = load_dataset(dataset.hf_repo, dataset.hf_config, split=dataset.split)
+    else:
+        ds = load_dataset(dataset.hf_repo, split=dataset.split)
     total = len(ds)
     k = min(n, total)
     indices = random.Random(seed).sample(range(total), k)

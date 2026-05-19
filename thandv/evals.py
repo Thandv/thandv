@@ -16,6 +16,7 @@ the runner can override it via `--persona`.
 from __future__ import annotations
 
 import json
+import random
 import re
 import subprocess
 import sys
@@ -311,6 +312,161 @@ WRITER = EvalSuite(
     ],
 )
 SUITES[WRITER.name] = WRITER
+
+
+# --- writer-prefs (DPO-style preference) --------------------------------
+# Each task presents two passages -- a "chosen" (preferred-style) and a
+# "rejected" (anti-pattern). The model is asked which is the stronger
+# writing and replies with a single letter. The A/B position is
+# randomised deterministically per task id so position bias doesn't help.
+#
+# This measures preference *alignment* -- not generation quality. A model
+# can write fluently and still pick poorly here, or pick well and write
+# poorly. It's a complementary signal to the structural `writer` suite.
+
+
+def _pref_prompt(task_desc: str, a: str, b: str) -> str:
+    return (
+        f"Task: {task_desc}\n\n"
+        "Read the two candidate passages below. Which is the stronger "
+        "writing for the task? Reply with ONLY the single letter A or B "
+        "-- no explanation, no punctuation.\n\n"
+        f"A:\n{a}\n\n"
+        f"B:\n{b}"
+    )
+
+
+_PREF_LETTER_RE = re.compile(r"\b([AB])\b", re.IGNORECASE)
+
+
+def _pref_choice_matches(reply: str, chosen_letter: str) -> bool:
+    """Permissive parse: first standalone A or B in the reply wins.
+
+    Word-boundary so 'all', 'at', 'about' don't false-match on stray
+    letters; case-insensitive so 'a' / 'b' replies still count.
+    """
+    m = _PREF_LETTER_RE.search(reply)
+    if not m:
+        return False
+    return m.group(1).upper() == chosen_letter
+
+
+def _pref_task(
+    task_id: str, task_desc: str, chosen: str, rejected: str
+) -> EvalTask:
+    """Build a preference task; A/B position is deterministic per task_id."""
+    rng = random.Random(task_id)
+    chosen_is_a = rng.random() < 0.5
+    a, b = (chosen, rejected) if chosen_is_a else (rejected, chosen)
+    chosen_letter = "A" if chosen_is_a else "B"
+    return EvalTask(
+        id=task_id,
+        prompt=_pref_prompt(task_desc, a, b),
+        verify=lambda reply, letter=chosen_letter: _pref_choice_matches(reply, letter),
+    )
+
+
+WRITER_PREFS = EvalSuite(
+    name="writer-prefs",
+    default_persona="writer",
+    tasks=[
+        _pref_task(
+            "concise-vs-verbose",
+            "Concise observation on why daily walks help focus.",
+            chosen=(
+                "A daily walk clears the head and breaks fixation -- two "
+                "things a desk-bound day erodes."
+            ),
+            rejected=(
+                "In my personal opinion, I really do think that, on the "
+                "whole, going for a walk every single day can be quite "
+                "genuinely beneficial for many different aspects of one's "
+                "mental focus and overall cognitive clarity throughout the "
+                "working day."
+            ),
+        ),
+        _pref_task(
+            "active-vs-passive",
+            "One-sentence description of a release decision.",
+            chosen="The team shipped the release on Friday after staging tests passed.",
+            rejected=(
+                "The release was shipped on Friday by the team after the "
+                "staging tests had been passed."
+            ),
+        ),
+        _pref_task(
+            "specific-vs-abstract",
+            "One-sentence observation about a kitchen scene.",
+            chosen="A cracked yellow mug sat in the sink, half-full of cold coffee.",
+            rejected=(
+                "An item of crockery, in a state of disrepair, was present "
+                "in the washing-up area, containing a quantity of beverage "
+                "residue."
+            ),
+        ),
+        _pref_task(
+            "no-hedge-vs-hedge",
+            "One-sentence opinion on remote work.",
+            chosen=(
+                "Remote work suits focused builders and breaks teams that "
+                "need fast handoffs."
+            ),
+            rejected=(
+                "I think it might possibly be the case that, in some sense, "
+                "remote work could perhaps be considered to be sort of "
+                "useful for some people."
+            ),
+        ),
+        _pref_task(
+            "show-vs-tell",
+            "One-sentence depiction of grief after bad news.",
+            chosen=(
+                "He folded the letter, set it on the table, and walked "
+                "outside without his coat."
+            ),
+            rejected=(
+                "He felt extremely sad and was deeply upset by what the "
+                "letter had told him."
+            ),
+        ),
+        _pref_task(
+            "varied-vs-monotone",
+            "Two-sentence opening of an internal sales report.",
+            chosen=(
+                "Sales fell. The cause was a delayed product launch, not "
+                "the weather we blamed in March."
+            ),
+            rejected=(
+                "The sales numbers were lower than expected. The reason "
+                "for this was a delayed product launch."
+            ),
+        ),
+        _pref_task(
+            "fresh-vs-cliche",
+            "One-sentence simile for exhaustion after a long flight.",
+            chosen=(
+                "She walked off the plane the way you walk off a long-haul "
+                "bus: stiff, dazed, slow to remember where the door was."
+            ),
+            rejected=(
+                "She walked off the plane feeling like a million bucks "
+                "after running a marathon -- totally drained but ready to "
+                "seize the day."
+            ),
+        ),
+        _pref_task(
+            "strong-opening-vs-windup",
+            "Opening sentence of a blog post about debugging.",
+            chosen="The bug was in the cache.",
+            rejected=(
+                "In this post, I want to talk a bit about a bug that I "
+                "recently encountered, which, as it turned out, was "
+                "actually located in the cache."
+            ),
+        ),
+    ],
+)
+SUITES[WRITER_PREFS.name] = WRITER_PREFS
 
 
 FINANCE = EvalSuite(
