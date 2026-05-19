@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from thandv import config, evals as eval_mod, memory, rag, trainer, training_backend
+from thandv import config, evals as eval_mod, memory, rag, session_promotion, trainer, training_backend
 
 
 @pytest.fixture
@@ -38,6 +38,8 @@ def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(memory, "SESSIONS_DIR", sessions)
     monkeypatch.setattr(memory, "SKILLS_DIR", skills)
     monkeypatch.setattr(memory, "MEMORY_DIR", mem)
+
+    monkeypatch.setattr(session_promotion, "SESSIONS_DIR", sessions)
 
     monkeypatch.setattr(trainer, "TRAINING_DIR", training)
     monkeypatch.setattr(trainer, "QUEUE_DIR", tq)
