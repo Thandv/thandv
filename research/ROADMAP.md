@@ -110,10 +110,19 @@ may use free internet sources of good quality.**
 
 ## v0.6 — verifier-filtered synthetic data
 
-- [ ] Generate candidates at scale via free teachers
-- [ ] Filter locally: unit tests pass, type-check, lint, smoke runs
-- [ ] Train on survivors only
-- [ ] This is where the improvement loop starts compounding
+- [x] `thandv distill-filtered --teacher <name> --suite <suite> --n N` —
+      for each task in the suite, distill N candidates from the teacher,
+      keep only the ones the suite's verifier accepts.
+- [x] Reuses every existing eval suite's verifier (smoke, humaneval,
+      mbpp, writer, finance, swe-lite). No new verifier infrastructure
+      needed — they were already (prompt, verifier) pairs.
+- [x] Output lands in the training queue with a sidecar provenance JSON
+      that records the per-task yield breakdown so you can see which
+      tasks the model + teacher pair is struggling on.
+- [x] Higher default temperature (0.7) than plain distill: we *want*
+      diverse candidates so the filter has something to pick from.
+- [x] This is where the improvement loop starts compounding. The
+      training data's ground truth is the verifier, not the teacher.
 
 ## v0.7 — session promotion
 

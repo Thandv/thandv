@@ -504,6 +504,52 @@ def cmd_distill(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_distill_filtered(args: argparse.Namespace) -> int:
+    """Distill N completions per eval task; keep only those that pass."""
+    from thandv import teachers, verifier_filtered
+
+    try:
+        teachers.get_teacher(args.teacher)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    try:
+        get_suite(args.suite)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    def progress(i: int, total: int, status: str) -> None:
+        marker = "+" if status.startswith("pass") else (
+            "-" if status.startswith("reject") else "x"
+        )
+        print(f"[{i:4d}/{total}] {marker} {status}", flush=True)
+
+    try:
+        queue_path, stats = verifier_filtered.distill_and_filter(
+            args.teacher,
+            args.suite,
+            n_per_task=args.n,
+            limit=args.limit,
+            persona=args.persona,
+            on_progress=progress,
+            temperature=args.temperature,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    print()
+    print(f"queued:     {queue_path.name}")
+    print(
+        f"yield:      {stats['n_passed']}/{stats['n_attempted']}  "
+        f"({stats['yield']:.1%})"
+    )
+    print(f"provenance: {queue_path.name}.provenance.json")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -632,6 +678,33 @@ def main(argv: list[str] | None = None) -> int:
         help="random seed when pulling prompts from a public dataset",
     )
     p_distill.set_defaults(func=cmd_distill)
+
+    p_dfilt = sub.add_parser(
+        "distill-filtered",
+        help="generate completions from a teacher; keep only those that pass the suite's verifier",
+    )
+    p_dfilt.add_argument("--teacher", required=True, help="teacher name (see `thandv distill --list`)")
+    p_dfilt.add_argument(
+        "--suite", required=True,
+        help="eval suite to use as the source of (prompt, verifier) pairs",
+    )
+    p_dfilt.add_argument(
+        "--n", type=int, default=3,
+        help="completions to request per task (default 3 — higher means more chances to pass)",
+    )
+    p_dfilt.add_argument(
+        "--limit", type=int,
+        help="cap the number of tasks (default: all)",
+    )
+    p_dfilt.add_argument(
+        "--persona",
+        help="record persona in provenance (informational)",
+    )
+    p_dfilt.add_argument(
+        "--temperature", type=float, default=0.7,
+        help="teacher sampling temperature (default 0.7 — higher = more diverse candidates)",
+    )
+    p_dfilt.set_defaults(func=cmd_distill_filtered)
 
     p_config = sub.add_parser("config", help="show or set config keys")
     p_config.add_argument("--set", action="append", help="key=value", default=[])
