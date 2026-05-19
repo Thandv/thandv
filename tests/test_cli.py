@@ -521,6 +521,57 @@ def test_distill_happy_path_with_prompts_file(thandv_home, monkeypatch, tmp_path
     assert "provenance:" in out
 
 
+def test_distill_filtered_refuses_anthropic(thandv_home, capsys):
+    rc = main([
+        "distill-filtered",
+        "--teacher", "anthropic-claude",
+        "--suite", "smoke",
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "refused" in err.lower()
+
+
+def test_distill_filtered_unknown_suite(thandv_home, monkeypatch, capsys):
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    rc = main([
+        "distill-filtered",
+        "--teacher", "groq-llama-3.3-70b",
+        "--suite", "no-such-suite",
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown suite" in err.lower()
+
+
+def test_distill_filtered_happy_path(thandv_home, monkeypatch, capsys):
+    from thandv import teachers as tch
+
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "56"}}]}
+
+    monkeypatch.setattr(tch.requests, "post", lambda *a, **kw: FakeResp())
+
+    rc = main([
+        "distill-filtered",
+        "--teacher", "groq-llama-3.3-70b",
+        "--suite", "smoke",
+        "--n", "1",
+        "--limit", "1",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "queued:" in out
+    assert "yield:" in out
+    assert "1/1" in out  # one attempt, one pass
+    assert "100.0%" in out
+
+
 def test_distill_happy_path_with_prompts_from_dataset(thandv_home, monkeypatch, capsys):
     from thandv import teachers as tch, training_data as td
 

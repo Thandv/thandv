@@ -181,11 +181,29 @@ clean error with ToS context):
 | `together-llama-3.3-70b`      | Together   | ~60 RPM                                 |
 | `openrouter-llama-3.3-70b`    | OpenRouter | ~20 RPM, 200 req/day                    |
 
-Additional ingestion paths landing in later milestones:
+Verifier-filtered synthetic distillation (v0.6+) — the compounding piece:
 
-- **Verifier-filtered synthetic data** — v0.6. Generate via free teachers,
-  keep only what passes local unit tests / lints. Where the loop actually
-  starts compounding.
+```bash
+thandv distill-filtered \
+  --teacher groq-llama-3.3-70b \
+  --suite humaneval \
+  --n 5 \
+  --limit 50            # for each of 50 tasks, ask 5 times; keep only passes
+```
+
+The eval suite's verifier (HumanEval's unit tests, smoke's regex check,
+swe-lite's pytest run) decides what's correct. The teacher's job is just
+candidate generation. Training data this produces is **bounded by what
+the verifier accepts** — not by what the teacher generated. That's the
+only honest path to compounding self-improvement on a verifiable domain.
+
+Output is a queue JSONL plus a sidecar provenance JSON recording the
+per-task yield (how many candidates were attempted vs how many passed).
+A yield well below 100% on a given task is signal that the model gap is
+real and worth more candidates / different teacher / different prompt.
+
+Additional ingestion paths landing later:
+
 - **Session promotion** — v0.7. Verifier-passed user sessions auto-converted
   to training pairs.
 
