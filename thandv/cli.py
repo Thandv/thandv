@@ -318,8 +318,66 @@ def cmd_train(args: argparse.Namespace) -> int:
     if action == "sample-public":
         return _cmd_train_sample_public(args)
 
+    if action == "sessions":
+        return _cmd_train_sessions()
+
+    if action == "promote-session":
+        return _cmd_train_promote_session(args)
+
+    if action == "promote-sessions":
+        return _cmd_train_promote_sessions(args)
+
     print(f"unknown train action: {action}", file=sys.stderr)
     return 2
+
+
+def _cmd_train_sessions() -> int:
+    """One-line summary of every session in ~/.thandv/sessions/."""
+    from thandv import session_promotion as sp
+    sessions = sp.list_sessions()
+    if not sessions:
+        print("(no sessions on disk)")
+        return 0
+    print(f"{'session':40s}  pairs  tools  errs  clean")
+    for path in sessions:
+        s = sp.stats(path)
+        marker = "✓" if s.is_clean else "·"
+        print(
+            f"{path.name:40s}  {s.n_pairs_extracted:5d}  "
+            f"{s.n_tool_calls:5d}  {s.n_tool_errors:4d}  {marker}"
+        )
+    return 0
+
+
+def _cmd_train_promote_session(args: argparse.Namespace) -> int:
+    """Promote one named session to the training queue."""
+    from thandv import session_promotion as sp
+    src = Path(args.path).expanduser()
+    if not src.exists():
+        print(f"not found: {src}", file=sys.stderr)
+        return 2
+    result = sp.promote_session(src)
+    if result is None:
+        print(f"nothing to promote: {src.name} has zero (user→assistant) pairs", file=sys.stderr)
+        return 1
+    queue_path, provenance = result
+    print(f"queued:     {queue_path.name}  ({provenance['n_pairs']} pairs)")
+    print(f"provenance: {queue_path.name}.provenance.json")
+    return 0
+
+
+def _cmd_train_promote_sessions(args: argparse.Namespace) -> int:
+    """Bulk-promote all clean, unpromoted sessions."""
+    from thandv import session_promotion as sp
+    promoted = sp.promote_clean_sessions(max_sessions=args.max_sessions)
+    if not promoted:
+        print("(no clean unpromoted sessions found)")
+        return 0
+    total_pairs = sum(p["n_pairs"] for _, p in promoted)
+    print(f"promoted {len(promoted)} sessions, {total_pairs} pairs total:")
+    for queue_path, provenance in promoted:
+        print(f"  {queue_path.name}  ({provenance['n_pairs']} pairs)")
+    return 0
 
 
 def _cmd_train_datasets() -> int:
@@ -634,6 +692,24 @@ def main(argv: list[str] | None = None) -> int:
     p_sample.add_argument("dataset", help="dataset name (see `train datasets`)")
     p_sample.add_argument("--n", type=int, default=100, help="how many rows (default 100)")
     p_sample.add_argument("--seed", type=int, default=0, help="random seed (default 0)")
+
+    train_sub.add_parser(
+        "sessions",
+        help="list recorded chat sessions and their pair / tool-error counts",
+    )
+    p_promote_one = train_sub.add_parser(
+        "promote-session",
+        help="extract (user→assistant) pairs from one session and queue them",
+    )
+    p_promote_one.add_argument("path", help="path to a session .jsonl under ~/.thandv/sessions/")
+    p_promote_many = train_sub.add_parser(
+        "promote-sessions",
+        help="bulk-promote every clean (no tool errors) session not yet promoted",
+    )
+    p_promote_many.add_argument(
+        "--max-sessions", type=int,
+        help="cap on how many sessions to promote in one run",
+    )
     p_enable = train_sub.add_parser(
         "enable",
         help="set up the LoRA training pipeline (pulls HF base model + verifies)",

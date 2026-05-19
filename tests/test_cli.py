@@ -521,6 +521,77 @@ def test_distill_happy_path_with_prompts_file(thandv_home, monkeypatch, tmp_path
     assert "provenance:" in out
 
 
+def test_train_sessions_empty(thandv_home, capsys):
+    rc = main(["train", "sessions"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no sessions" in out.lower()
+
+
+def test_train_sessions_with_data(thandv_home, capsys):
+    import json
+    sp = thandv_home / "sessions" / "test1.jsonl"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(
+        json.dumps({"role": "user", "content": "q"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "a"}) + "\n"
+    )
+    rc = main(["train", "sessions"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "test1.jsonl" in out
+    assert "clean" in out.lower()
+
+
+def test_train_promote_session_unknown_path(thandv_home, capsys):
+    rc = main(["train", "promote-session", "/definitely/not/here.jsonl"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not found" in err.lower()
+
+
+def test_train_promote_session_empty_session_returns_1(thandv_home, capsys):
+    import json
+    sp = thandv_home / "sessions" / "empty.jsonl"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({"role": "user", "content": "q"}) + "\n")
+    rc = main(["train", "promote-session", str(sp)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "nothing to promote" in err.lower()
+
+
+def test_train_promote_session_happy_path(thandv_home, capsys):
+    import json
+    sp = thandv_home / "sessions" / "good.jsonl"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(
+        json.dumps({"role": "user", "content": "q"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "a"}) + "\n"
+    )
+    rc = main(["train", "promote-session", str(sp)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "queued:" in out
+    assert "1 pairs" in out
+
+
+def test_train_promote_sessions_bulk(thandv_home, capsys):
+    import json
+    for name in ("a", "b"):
+        sp = thandv_home / "sessions" / f"{name}.jsonl"
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(
+            json.dumps({"role": "user", "content": "q"}) + "\n"
+            + json.dumps({"role": "assistant", "content": "a"}) + "\n"
+        )
+    rc = main(["train", "promote-sessions"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "promoted 2 sessions" in out
+    assert "2 pairs total" in out
+
+
 def test_distill_filtered_refuses_anthropic(thandv_home, capsys):
     rc = main([
         "distill-filtered",

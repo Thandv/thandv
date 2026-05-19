@@ -126,10 +126,22 @@ may use free internet sources of good quality.**
 
 ## v0.7 — session promotion
 
-- [ ] Capture verifier-passed user sessions
-- [ ] Auto-promote to the training set
-- [ ] `thandv train --from-sessions` flag
-- [ ] Per-persona adapter rotation
+- [x] Capture: the agent already writes JSONL sessions to
+      `~/.thandv/sessions/`; v0.7 turns them into training data without
+      changing the recording format.
+- [x] `thandv train sessions` — table of every session with pair /
+      tool-error counts and clean/dirty marker.
+- [x] `thandv train promote-session <path>` — explicit extraction of
+      one session's (user → assistant) pairs to the queue.
+- [x] `thandv train promote-sessions` — bulk auto-promotion of every
+      session with **zero tool errors** (the "clean" criterion).
+      Idempotent via per-session `.promoted` markers.
+- [x] Pair extraction strips tool blocks from completions, drops
+      tool-only assistant turns, ignores legacy `tool-result`-as-user
+      pseudo-events. Each user message pairs with exactly one assistant.
+- [x] Provenance sidecar records source session, n_pairs, full stats.
+- [ ] Per-persona adapter rotation — deferred to v0.7.x (needs adapter
+      lifecycle policy, not blocked on session-promotion infrastructure).
 
 ## v0.8 — writer persona deepening
 

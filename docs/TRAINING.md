@@ -202,10 +202,28 @@ per-task yield (how many candidates were attempted vs how many passed).
 A yield well below 100% on a given task is signal that the model gap is
 real and worth more candidates / different teacher / different prompt.
 
-Additional ingestion paths landing later:
+Session promotion (v0.7+) — train on **your own** accepted outcomes:
 
-- **Session promotion** — v0.7. Verifier-passed user sessions auto-converted
-  to training pairs.
+```bash
+thandv train sessions                  # list every session + pair / tool-error counts
+thandv train promote-session <path>    # extract pairs from ONE session → queue
+thandv train promote-sessions          # bulk-promote every CLEAN session not yet promoted
+```
+
+A session is "clean" iff no recorded tool result has an `error` key.
+Bulk promotion is idempotent: a `<session>.promoted` marker file is
+written next to each session after first promotion, so reruns don't
+double-promote.
+
+What gets extracted: every direct `(user → assistant)` pair in the
+session, with tool-block bookkeeping stripped from the assistant's
+content. The same user message doesn't pair with two assistant turns.
+Assistant turns that are only a tool block produce no pair (those are
+"let me look it up" beats, not final answers).
+
+Honest scope: this trains direct-answer behaviour. If the user wants
+the model to learn *agentic multi-turn tool use*, a richer format
+(multi-message training) is a later milestone.
 
 ## Observability
 
