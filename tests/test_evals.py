@@ -772,3 +772,85 @@ def test_run_suite_invokes_lazy_loader(thandv_home, monkeypatch):
     assert calls["n"] == 1
     assert len(results) == 1
     assert results[0].passed
+
+
+# --- writer-prefs (DPO-style preference) ----------------------------------
+
+def test_writer_prefs_suite_registered():
+    suite = get_suite("writer-prefs")
+    assert suite.name == "writer-prefs"
+    assert suite.default_persona == "writer"
+    assert len(suite.tasks) >= 6
+
+
+def test_writer_prefs_task_prompt_carries_both_passages():
+    """The prompt presents both candidates explicitly under A: / B: labels."""
+    task = get_suite("writer-prefs").tasks[0]
+    assert "A:" in task.prompt
+    assert "B:" in task.prompt
+    assert "A or B" in task.prompt
+
+
+def test_writer_prefs_position_is_deterministic_per_task_id():
+    """Re-importing wouldn't help; we rely on the position being stable for
+    a given task id so test runs / regression tracking are reproducible."""
+    from thandv.evals import _pref_task
+
+    t1 = _pref_task("stable-id", "desc", chosen="chosen", rejected="rejected")
+    t2 = _pref_task("stable-id", "desc", chosen="chosen", rejected="rejected")
+    assert t1.prompt == t2.prompt
+
+
+def test_writer_prefs_position_varies_across_task_ids():
+    """Different IDs should not all land in the same A/B slot (smoke check
+    that the random seeding is actually doing something)."""
+    from thandv.evals import _pref_task
+
+    positions = []
+    for i in range(20):
+        task = _pref_task(f"id-{i}", "desc", chosen="X-CHOSEN-X", rejected="Y-REJECTED-Y")
+        positions.append(task.prompt.index("X-CHOSEN-X") < task.prompt.index("Y-REJECTED-Y"))
+    # Mix of A-first and B-first across 20 task IDs.
+    assert any(positions) and not all(positions)
+
+
+def test_writer_prefs_verifier_accepts_correct_letter():
+    """The first standalone A/B in the reply decides the verdict."""
+    from thandv.evals import _pref_task
+
+    task = _pref_task("vt-1", "desc", chosen="CHOSEN", rejected="REJECTED")
+    # Find which letter currently maps to 'CHOSEN' in the prompt.
+    chosen_pos = task.prompt.index("CHOSEN")
+    a_pos = task.prompt.index("A:")
+    b_pos = task.prompt.index("B:")
+    correct_letter = "A" if a_pos < chosen_pos < b_pos else "B"
+    assert task.verify(correct_letter) is True
+    wrong = "B" if correct_letter == "A" else "A"
+    assert task.verify(wrong) is False
+
+
+def test_writer_prefs_verifier_permissive_punctuation():
+    """Models often append punctuation or a sentence; we still accept the
+    first A/B character."""
+    from thandv.evals import _pref_task
+
+    task = _pref_task("vt-2", "desc", chosen="CHOSEN", rejected="REJECTED")
+    chosen_pos = task.prompt.index("CHOSEN")
+    a_pos = task.prompt.index("A:")
+    b_pos = task.prompt.index("B:")
+    correct_letter = "A" if a_pos < chosen_pos < b_pos else "B"
+    assert task.verify(f"{correct_letter}.") is True
+    assert task.verify(f"  {correct_letter} ") is True
+
+
+def test_writer_prefs_verifier_rejects_empty_reply():
+    from thandv.evals import _pref_task
+
+    task = _pref_task("vt-3", "desc", chosen="C", rejected="R")
+    assert task.verify("") is False
+    assert task.verify("no letter here at all") is False
+
+
+def test_writer_prefs_unique_task_ids():
+    ids = [t.id for t in get_suite("writer-prefs").tasks]
+    assert len(ids) == len(set(ids))

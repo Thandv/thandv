@@ -151,9 +151,17 @@ may use free internet sources of good quality.**
 
 ## v0.8 — writer persona deepening
 
-- [ ] Bundled style guides, public-domain literary corpora
-- [ ] Preference-based eval suite (DPO-style pairs)
-- [ ] LoRA on prose datasets (selected slices of FineWeb-Edu, books3-clean)
+- [x] Bundled style guides, public-domain literary corpora
+      (`thandv writer bundle-style-corpus`; Strunk 1918 excerpts, Twain,
+      Lincoln, Shakespeare, in-house house style. Provenance per snippet.)
+- [x] Preference-based eval suite (DPO-style pairs) — `thandv eval writer-prefs`,
+      8 hand-crafted pairs covering concise/active/specific/no-hedge/show/
+      varied/fresh/strong-opening. A/B position randomised per task id.
+- [x] LoRA on prose datasets — wikitext-2-raw-v1 and TinyStories registered as
+      public datasets with `persona_hint="writer"`; continuation-style row
+      mapper produces `{prompt, completion}` pairs. (FineWeb-Edu and books3 not
+      shipped — FineWeb-Edu is large enough to need streaming support we don't
+      have yet; books3 was pulled for copyright. Honest substitutes for v0.8.)
 
 ## v0.9 — image / arts (separate backend)
 

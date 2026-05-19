@@ -120,7 +120,8 @@ Available suites:
 | Suite       | Tasks | Needs    | Notes |
 |-------------|------:|----------|-------|
 | `smoke`     | 3     | (none)   | Default. Arithmetic, string-reverse, `is_prime`. Runs in seconds. |
-| `writer`    | 6     | (none)   | Hand-coded prose tasks for the writer persona. Verifiers check *structural* properties (heading count, bullet count, word bounds, forbidden phrases) — not prose quality. Real preference-based eval is a later milestone. |
+| `writer`    | 6     | (none)   | Hand-coded prose tasks for the writer persona. Verifiers check *structural* properties (heading count, bullet count, word bounds, forbidden phrases) — not prose quality. Complement with `writer-prefs` for alignment signal. |
+| `writer-prefs` | 8  | (none)   | DPO-style preference pairs (concise/active/specific/no-hedge/show/varied/fresh/strong-opening). Each task asks the model to pick A or B between a chosen and a rejected passage; position is randomised per task id so direct A-bias doesn't help. Measures preference *alignment*, not generation quality. |
 | `finance`   | 6     | (none)   | Hand-coded finance-discipline tasks. 3 *refusal* tasks (stock-pick, market-prediction, alpha-claim) and 3 *allowed-activity* tasks (concept naming, disclaimer compliance, resume bullets). Markers drawn from observed `qwen2.5-coder:7b` refusal language. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
 | `mbpp`      | 257   | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. The prompt includes the first test as an example, because MBPP's natural-language description doesn't carry the expected function name. |
@@ -175,6 +176,19 @@ you want a fresh start.
 Embeddings come from Ollama's `nomic-embed-text` (~270MB; `install.sh`
 pulls it automatically). Without it, `ingest` and `retrieve` both refuse to
 run.
+
+### `thandv writer [ACTION]`
+
+Writer-persona helpers.
+
+| Action                                | Description                                              |
+|---------------------------------------|----------------------------------------------------------|
+| `bundle-style-corpus [--clear]`       | Ingest the bundled public-domain style snippets (Strunk 1918 excerpts, Lincoln, Twain, Shakespeare) plus the in-house house-style guide into the writer corpus. Use `--clear` for an idempotent re-ingest. |
+
+Every snippet is either US public domain (pre-1929 publication, or US
+federal address) or composed in-house under the repo's LICENSE — source
++ license is recorded per snippet inside
+[`thandv/style_corpus.py`](../thandv/style_corpus.py).
 
 ### `thandv train [ACTION]`
 

@@ -707,3 +707,50 @@ def test_train_enable_reports_fetch_failure_cleanly(thandv_home, monkeypatch, ca
     err = capsys.readouterr().err
     assert "download failed" in err.lower()
     assert "network unreachable" in err.lower()
+
+
+# --- thandv writer --------------------------------------------------------
+
+def test_writer_no_action_errors(thandv_home, capsys):
+    rc = main(["writer"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "bundle-style-corpus" in err
+
+
+def test_writer_bundle_refuses_without_embed_model(thandv_home, monkeypatch, capsys):
+    from thandv import rag
+
+    monkeypatch.setattr(rag, "embed_model_available", lambda: False)
+    rc = main(["writer", "bundle-style-corpus"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "embed model" in err.lower()
+
+
+def test_writer_bundle_happy_path(thandv_home, monkeypatch, capsys):
+    from thandv import rag, style_corpus
+
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+    monkeypatch.setattr(rag, "embed", lambda text: [0.1] * rag.EMBED_DIM)
+
+    rc = main(["writer", "bundle-style-corpus"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "writer corpus" in out
+    chunks = rag.load_chunks("writer")
+    assert len(chunks) >= len(style_corpus.STYLE_CORPUS)
+
+
+def test_writer_bundle_clear_flag_keeps_count_stable(thandv_home, monkeypatch, capsys):
+    """Two `--clear` runs should not double the corpus."""
+    from thandv import rag
+
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+    monkeypatch.setattr(rag, "embed", lambda text: [0.1] * rag.EMBED_DIM)
+
+    main(["writer", "bundle-style-corpus"])
+    first = len(rag.load_chunks("writer"))
+    main(["writer", "bundle-style-corpus", "--clear"])
+    second = len(rag.load_chunks("writer"))
+    assert second == first

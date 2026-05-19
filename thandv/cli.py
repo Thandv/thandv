@@ -648,6 +648,29 @@ def cmd_distill_filtered(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_writer(args: argparse.Namespace) -> int:
+    """`thandv writer ...` subcommands for the writer persona."""
+    if args.writer_action == "bundle-style-corpus":
+        from thandv import style_corpus
+
+        try:
+            chunks = style_corpus.bundle_writer_corpus(clear=args.clear)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        action = "re-ingested" if args.clear else "ingested"
+        print(
+            f"{action} {len(style_corpus.STYLE_CORPUS)} snippets into "
+            f"writer corpus ({chunks} chunks)."
+        )
+        return 0
+    print(
+        "writer needs an action: bundle-style-corpus [--clear]",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -823,6 +846,19 @@ def main(argv: list[str] | None = None) -> int:
         help="teacher sampling temperature (default 0.7 — higher = more diverse candidates)",
     )
     p_dfilt.set_defaults(func=cmd_distill_filtered)
+
+    p_writer = sub.add_parser("writer", help="writer-persona helpers")
+    writer_sub = p_writer.add_subparsers(dest="writer_action")
+    p_bundle = writer_sub.add_parser(
+        "bundle-style-corpus",
+        help="ingest the bundled public-domain style snippets into the writer corpus",
+    )
+    p_bundle.add_argument(
+        "--clear",
+        action="store_true",
+        help="clear the writer corpus before ingesting (keeps the bundle idempotent)",
+    )
+    p_writer.set_defaults(func=cmd_writer)
 
     p_config = sub.add_parser("config", help="show or set config keys")
     p_config.add_argument("--set", action="append", help="key=value", default=[])
