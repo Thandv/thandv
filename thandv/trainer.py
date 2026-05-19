@@ -29,7 +29,7 @@ import shutil
 import signal
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,21 +51,44 @@ class TrainerState:
     started_at: str = ""
     last_tick_at: str = ""
     ticks_completed: int = 0
+    # Last/best pass rate of the *most recent* tick, regardless of persona.
+    # Per-persona best rates live in `best_by_persona` below.
     last_eval_pass_rate: float = 0.0
     best_eval_pass_rate: float = 0.0
     baseline_measured: bool = False
     active_adapter: str = ""
-    # The Ollama model the trainer currently considers best; starts as the
-    # untouched base (e.g. "qwen2.5-coder:7b") and gets replaced with
-    # "thandv-<adapter_id>" when an adapter is promoted. Empty means
-    # "fall back to whatever caller passed as base_model".
+    # Legacy single-active-model field. Kept on disk for backward compat;
+    # new code reads `active_models_by_persona` first and falls back to
+    # this on load.
     active_ollama_model: str = ""
+    # The model the trainer currently considers best *per persona*. After a
+    # promote, the persona's slot is replaced with `thandv-<adapter_id>`.
+    # Empty / missing key means "fall back to base_model" for that persona.
+    active_models_by_persona: dict[str, str] = field(default_factory=dict)
+    # Best eval pass rate the trainer has ever locked in *per persona*.
+    # Used for the promote gate: a new adapter only replaces the slot if
+    # it beats the persona's best.
+    best_by_persona: dict[str, float] = field(default_factory=dict)
     # HF repo id of the training base, e.g. "Qwen/Qwen2.5-Coder-7B". Set by
     # `thandv train enable`; the trainer reads it to find the local HF
     # safetensors for LoRA. Empty means "infer from the Ollama tag via the
     # default mapping table in training_backend".
     hf_base_model: str = ""
     paused: bool = False
+
+
+def _migrate_state(state: TrainerState) -> TrainerState:
+    """Bring an old state forward to the per-persona schema.
+
+    If we read a state file that has `active_ollama_model` set but no
+    `active_models_by_persona`, treat the old value as belonging to the
+    `code` persona (the historical default).
+    """
+    if state.active_ollama_model and "code" not in state.active_models_by_persona:
+        state.active_models_by_persona["code"] = state.active_ollama_model
+    if state.best_eval_pass_rate and "code" not in state.best_by_persona:
+        state.best_by_persona["code"] = state.best_eval_pass_rate
+    return state
 
 
 def _now() -> str:
@@ -83,9 +106,10 @@ def load_state() -> TrainerState:
     _ensure_dirs()
     if STATE_PATH.exists():
         data = json.loads(STATE_PATH.read_text())
-        return TrainerState(
+        state = TrainerState(
             **{k: v for k, v in data.items() if k in TrainerState.__annotations__}
         )
+        return _migrate_state(state)
     return TrainerState()
 
 
@@ -205,47 +229,75 @@ def _log_outcome(outcome: dict) -> dict:
     return outcome
 
 
-def tick(base_model: str, *, dry_run: bool = False) -> dict:
-    """Run one training iteration.
+def tick(
+    base_model: str,
+    persona: str = "code",
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Run one training iteration scoped to a persona.
 
     `base_model` is the Ollama tag of the untouched base (e.g.
-    "qwen2.5-coder:7b"). The trainer evaluates against
-    `state.active_ollama_model` if a promoted adapter exists, else against
-    `base_model`. Returns a dict describing what happened:
-    action ∈ {baseline, skip, promote, discard}.
+    "qwen2.5-coder:7b"). `persona` selects which slot of
+    `state.active_models_by_persona` we evaluate against and promote into,
+    AND which eval suite gates the promotion (via `Persona.eval_suite`).
+
+    Returns a dict describing what happened. `action` is one of:
+    `baseline` | `skip` | `promote` | `discard`.
     """
+    from thandv.personas import get_persona
+
     _ensure_dirs()
     state = load_state()
     state.last_tick_at = _now()
     state.ticks_completed += 1
 
-    # What model are we currently treating as best?
-    current_best_model = state.active_ollama_model or base_model
+    persona_obj = get_persona(persona)
+    suite = persona_obj.eval_suite
 
-    # Baseline eval: measured once at the start, against the active model.
-    if not state.baseline_measured:
+    current_best_model = state.active_models_by_persona.get(persona) or base_model
+    current_best_rate = state.best_by_persona.get(persona, 0.0)
+
+    # Baseline eval: measured once per persona, against whichever model is
+    # currently considered best for that persona (the base on first run).
+    if persona not in state.best_by_persona:
         try:
-            baseline = _run_eval(current_best_model)
+            baseline = _run_eval(current_best_model, suite=suite)
         except Exception as e:
             save_state(state)
             return _log_outcome(
-                {"action": "skip", "reason": f"baseline eval failed: {e}", "at": _now()}
+                {
+                    "action": "skip",
+                    "reason": f"baseline eval failed: {e}",
+                    "persona": persona,
+                    "suite": suite,
+                    "at": _now(),
+                }
             )
-        state.best_eval_pass_rate = baseline
+        state.best_by_persona[persona] = baseline
         state.last_eval_pass_rate = baseline
+        state.best_eval_pass_rate = max(state.best_eval_pass_rate, baseline)
         state.baseline_measured = True
-        # Lock in the active_ollama_model so we keep evaluating consistently.
-        if not state.active_ollama_model:
-            state.active_ollama_model = base_model
+        # Lock the persona's active model to base if nothing's been promoted.
+        state.active_models_by_persona.setdefault(persona, base_model)
         save_state(state)
         return _log_outcome(
-            {"action": "baseline", "pass_rate": baseline, "model": current_best_model, "at": _now()}
+            {
+                "action": "baseline",
+                "pass_rate": baseline,
+                "persona": persona,
+                "suite": suite,
+                "model": current_best_model,
+                "at": _now(),
+            }
         )
 
     queue_file = _pop_queue()
     if queue_file is None:
         save_state(state)
-        return _log_outcome({"action": "skip", "reason": "queue empty", "at": _now()})
+        return _log_outcome(
+            {"action": "skip", "reason": "queue empty", "persona": persona, "at": _now()}
+        )
 
     if dry_run:
         save_state(state)
@@ -254,6 +306,7 @@ def tick(base_model: str, *, dry_run: bool = False) -> dict:
                 "action": "skip",
                 "reason": "dry run",
                 "queue_file": queue_file.name,
+                "persona": persona,
                 "at": _now(),
             }
         )
@@ -273,16 +326,15 @@ def tick(base_model: str, *, dry_run: bool = False) -> dict:
                 "action": "skip",
                 "reason": f"train failed: {type(e).__name__}: {e}",
                 "queue_file": queue_file.name,
+                "persona": persona,
                 "at": _now(),
             }
         )
 
-    # Step 2: Eval the new model against the same suite as baseline.
+    # Step 2: Eval the new model against the persona's suite.
     try:
-        new_rate = _run_eval(new_ollama_model)
+        new_rate = _run_eval(new_ollama_model, suite=suite)
     except Exception as e:
-        # Couldn't gate. Clean up the new model + adapter dir, keep the
-        # queue file in place for a retry.
         _discard_adapter(adapter_id, new_ollama_model)
         save_state(state)
         return _log_outcome(
@@ -290,24 +342,27 @@ def tick(base_model: str, *, dry_run: bool = False) -> dict:
                 "action": "skip",
                 "reason": f"eval failed: {e}",
                 "queue_file": queue_file.name,
+                "persona": persona,
+                "suite": suite,
                 "at": _now(),
             }
         )
 
     state.last_eval_pass_rate = new_rate
-    improved = new_rate > state.best_eval_pass_rate
+    improved = new_rate > current_best_rate
     if improved:
-        # Promote: remember the new model + adapter; rotate the old active
-        # adapter out (but don't `ollama rm` the base — only thandv-<id>
-        # adapters get cleaned up here).
-        old_active_adapter = state.active_adapter
-        old_active_model = state.active_ollama_model
-        state.best_eval_pass_rate = new_rate
-        state.active_adapter = adapter_id
-        state.active_ollama_model = new_ollama_model
+        # Promote: replace the persona's slot. The OTHER persona slots are
+        # untouched — this is the per-persona adapter rotation.
+        old_active_model = state.active_models_by_persona.get(persona)
+        state.best_by_persona[persona] = new_rate
+        state.active_models_by_persona[persona] = new_ollama_model
+        state.active_adapter = adapter_id  # last-promoted, any persona
+        state.best_eval_pass_rate = max(state.best_eval_pass_rate, new_rate)
         action = "promote"
-        if old_active_adapter and old_active_model and old_active_model.startswith("thandv-"):
-            _discard_adapter(old_active_adapter, old_active_model)
+        # Tear down the previous persona-specific adapter if it was a
+        # thandv-<id> model (don't touch the base).
+        if old_active_model and old_active_model.startswith("thandv-"):
+            _discard_adapter(old_active_model.removeprefix("thandv-"), old_active_model)
     else:
         _discard_adapter(adapter_id, new_ollama_model)
         action = "discard"
@@ -323,7 +378,9 @@ def tick(base_model: str, *, dry_run: bool = False) -> dict:
             "ollama_model": new_ollama_model,
             "queue_file": queue_file.name,
             "pass_rate": new_rate,
-            "best_pass_rate": state.best_eval_pass_rate,
+            "persona": persona,
+            "suite": suite,
+            "best_pass_rate": state.best_by_persona.get(persona, 0.0),
             "at": _now(),
         }
     )
@@ -339,9 +396,13 @@ def _run_eval(model: str, suite: str = "smoke") -> float:
 
 # --- Daemon control -------------------------------------------------------
 
-def run_forever(model: str, interval_s: int = 300) -> None:
+def run_forever(model: str, persona: str = "code", interval_s: int = 300) -> None:
     """Foreground daemon loop. Designed to be invoked by launchd / systemd
     or with `thandv train run` for manual debug.
+
+    The daemon ticks against one persona at a time. To train multiple
+    personas, run one daemon per persona (different intervals, different
+    queue files).
     """
     _ensure_dirs()
     state = load_state()
@@ -358,7 +419,7 @@ def run_forever(model: str, interval_s: int = 300) -> None:
     try:
         while True:
             if not load_state().paused:
-                tick(model)
+                tick(model, persona)
             time.sleep(interval_s)
     except KeyboardInterrupt:
         pass

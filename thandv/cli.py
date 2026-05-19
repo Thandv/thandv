@@ -10,6 +10,8 @@ from pathlib import Path
 
 import requests
 
+from dataclasses import asdict
+
 from thandv import __version__, rag, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
@@ -77,16 +79,31 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return 2
     persona = get_persona(persona_name)
 
+    # If the trainer has promoted a persona-specific adapter, use it
+    # instead of the raw base. The user can still pin to base via
+    # `--model <tag>` (future v0.7.x CLI flag); for now persona-promoted
+    # wins automatically.
+    state = trainer.load_state()
+    persona_model = state.active_models_by_persona.get(persona_name)
+    if persona_model:
+        active_model = persona_model
+        cfg = Config(**{**asdict(cfg), "model": persona_model})
+    else:
+        active_model = cfg.model
+
     if not _check_ollama():
         print("ollama is not running. Start it with: `ollama serve`", file=sys.stderr)
         return 2
-    if not _ensure_model(cfg.model):
-        print(f"model `{cfg.model}` not pulled. Run: `ollama pull {cfg.model}`", file=sys.stderr)
+    if not _ensure_model(active_model):
+        print(f"model `{active_model}` not pulled. Run: `ollama pull {active_model}`", file=sys.stderr)
         return 2
 
     agent = Agent(config=cfg, persona=persona)
+    adapter_note = (
+        f" [persona adapter: {persona_model}]" if persona_model else ""
+    )
     print(
-        f"thandv {__version__} | {cfg.model} | persona: {persona.name} | "
+        f"thandv {__version__} | {active_model} | persona: {persona.name}{adapter_note} | "
         f"session: {agent.session_path.name}"
     )
     print("Type your message. Ctrl-D or /exit to quit.\n")
@@ -255,11 +272,19 @@ def cmd_train(args: argparse.Namespace) -> int:
         print(f"started_at:            {state.started_at or '—'}")
         print(f"last_tick_at:          {state.last_tick_at or '—'}")
         print(f"ticks_completed:       {state.ticks_completed}")
-        print(f"baseline_measured:     {state.baseline_measured}")
         print(f"last_eval_pass_rate:   {state.last_eval_pass_rate:.3f}")
-        print(f"best_eval_pass_rate:   {state.best_eval_pass_rate:.3f}")
-        print(f"active_adapter:        {state.active_adapter or '—'}")
         print(f"queue size:            {trainer.queue_size()}")
+        if state.active_models_by_persona or state.best_by_persona:
+            print("per-persona slots:")
+            personas = sorted(
+                set(state.active_models_by_persona) | set(state.best_by_persona)
+            )
+            for p in personas:
+                model = state.active_models_by_persona.get(p) or "—"
+                rate = state.best_by_persona.get(p, 0.0)
+                print(f"  {p:8s}  best={rate:.3f}  active={model}")
+        else:
+            print("per-persona slots:   (none yet — run `thandv train tick` to seed a baseline)")
         return 0
 
     if action == "queue":
@@ -279,7 +304,13 @@ def cmd_train(args: argparse.Namespace) -> int:
         return 0
 
     if action == "tick":
-        out = trainer.tick(cfg.model, dry_run=args.dry_run)
+        persona = getattr(args, "persona", None) or cfg.persona
+        try:
+            get_persona(persona)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        out = trainer.tick(cfg.model, persona, dry_run=args.dry_run)
         print(json.dumps(out, indent=2))
         return 0
 
@@ -301,8 +332,17 @@ def cmd_train(args: argparse.Namespace) -> int:
         return 1
 
     if action == "run":
-        print(f"trainer starting (model={cfg.model}, interval={args.interval}s). Ctrl-C to stop.")
-        trainer.run_forever(cfg.model, interval_s=args.interval)
+        persona = getattr(args, "persona", None) or cfg.persona
+        try:
+            get_persona(persona)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        print(
+            f"trainer starting (model={cfg.model}, persona={persona}, "
+            f"interval={args.interval}s). Ctrl-C to stop."
+        )
+        trainer.run_forever(cfg.model, persona, interval_s=args.interval)
         print("trainer stopped.")
         return 0
 
@@ -678,11 +718,13 @@ def main(argv: list[str] | None = None) -> int:
     p_enq.add_argument("path", help="path to a .jsonl file of training examples")
     p_tick = train_sub.add_parser("tick", help="run one train→eval→promote iteration now")
     p_tick.add_argument("--dry-run", action="store_true", help="don't actually train")
+    p_tick.add_argument("--persona", help="which persona slot to train (default: from config)")
     train_sub.add_parser("pause", help="pause the daemon (it keeps running but skips ticks)")
     train_sub.add_parser("resume", help="resume a paused daemon")
     train_sub.add_parser("stop", help="send SIGTERM to a running daemon")
     p_run = train_sub.add_parser("run", help="run the daemon in the foreground")
     p_run.add_argument("--interval", type=int, default=300, help="seconds between ticks")
+    p_run.add_argument("--persona", help="which persona slot to train (default: from config)")
     train_sub.add_parser("backends", help="list training backends and which is active")
     train_sub.add_parser("datasets", help="list registered public datasets")
     p_sample = train_sub.add_parser(
