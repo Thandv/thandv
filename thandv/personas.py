@@ -45,6 +45,7 @@ Safety:
 - Refuse requests for malware, credential theft, or harm to people.
 """,
     skills=("coding-style", "tool-use", "honesty"),
+    eval_suite="smoke",
 )
 
 
@@ -73,6 +74,7 @@ Limits:
   write drafts to disk.
 """,
     skills=("writing-style", "tool-use", "honesty"),
+    eval_suite="writer",
 )
 
 
@@ -109,6 +111,7 @@ On any trading-related reply, include this line at the end:
 """,
     skills=("finance-discipline", "tool-use", "honesty"),
     disclaimer="Educational only — not investment advice. Local model, no market edge.",
+    eval_suite="finance",
 )
 
 

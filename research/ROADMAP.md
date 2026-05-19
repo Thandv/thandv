@@ -140,8 +140,14 @@ may use free internet sources of good quality.**
       tool-only assistant turns, ignores legacy `tool-result`-as-user
       pseudo-events. Each user message pairs with exactly one assistant.
 - [x] Provenance sidecar records source session, n_pairs, full stats.
-- [ ] Per-persona adapter rotation — deferred to v0.7.x (needs adapter
-      lifecycle policy, not blocked on session-promotion infrastructure).
+- [x] Per-persona adapter rotation (v0.7.1): `TrainerState` now keys
+      `active_models_by_persona` and `best_by_persona` so each persona
+      has its own promote/discard slot. `tick(base_model, persona)`
+      reads `Persona.eval_suite` (code → smoke, writer → writer,
+      finance → finance) for the eval gate. `thandv chat --persona X`
+      automatically uses X's promoted adapter when one exists; status
+      shows a per-persona table. Old single-field state files migrate
+      forward (`active_ollama_model` → `active_models_by_persona[code]`).
 
 ## v0.8 — writer persona deepening
 

@@ -225,6 +225,38 @@ Honest scope: this trains direct-answer behaviour. If the user wants
 the model to learn *agentic multi-turn tool use*, a richer format
 (multi-message training) is a later milestone.
 
+## Per-persona adapter slots (v0.7.1)
+
+Each persona has its own training slot. Promoting a writer adapter
+doesn't touch the code adapter; the trainer tracks `active_models_by_persona`
+and `best_by_persona` separately. The eval suite that gates promotion is
+the one the persona declares:
+
+| Persona  | `eval_suite` |
+|----------|--------------|
+| `code`   | `smoke` (fast; humaneval is too slow for daemon ticks) |
+| `writer` | `writer`   |
+| `finance`| `finance`  |
+
+To train against a specific persona slot:
+
+```bash
+thandv train tick --persona writer            # one cycle into the writer slot
+thandv train run  --persona writer            # daemon trains writer continuously
+thandv train tick --persona code              # separate daemon for code
+```
+
+`thandv chat --persona writer` automatically uses the writer's promoted
+adapter (if any); otherwise it falls back to the base. `thandv train
+status` shows the per-persona table:
+
+```
+per-persona slots:
+  code      best=0.848  active=thandv-adapter-1779...
+  writer    best=1.000  active=qwen2.5-coder:7b
+  finance   best=0.833  active=qwen2.5-coder:7b
+```
+
 ## Observability
 
 ```bash
