@@ -77,24 +77,36 @@ may use free internet sources of good quality.**
       library refs (curated, license-clean). Deferred to v0.3.x — bundling
       a corpus inflates the repo and licensing requires careful curation.
 
-## v0.4 — training pipeline scaffolding
+## v0.4 — training pipeline (real LoRA on local hardware)
 
-- [ ] `thandv train` CLI command
-- [ ] Unsloth-based LoRA training on local hardware
-- [ ] Initial training data: license-filtered slices of The Stack v2 +
-      CodeAlpaca (HuggingFace `datasets`)
-- [ ] Adapter loading via Ollama Modelfiles
-- [ ] Training-run provenance (`training/sources.yml`)
+- [x] `thandv train` CLI command (status, queue, enqueue, tick, run,
+      pause, resume, stop, enable, backends, datasets, sample-public)
+- [x] Real LoRA training on Apple Silicon via MLX-LM (v0.4.1); backend
+      abstraction in place for Unsloth/HF+PEFT additions later
+- [x] HF→GGUF conversion via llama.cpp `convert_hf_to_gguf.py` (mlx-lm
+      0.31's GGUF exporter doesn't support qwen2/qwen3)
+- [x] Adapter loading via Ollama Modelfile `FROM <merged>.gguf` + automatic
+      `ollama create thandv-adapter-<ts>` on promotion
+- [x] Public-dataset ingestion (`thandv train sample-public`): CodeAlpaca,
+      Dolly-15k, Alpaca — license + persona hint per dataset (v0.4.2)
+- [ ] Training-run provenance file (covered partially by distill
+      provenance + adapter dir; full session-history doc pending)
 
 ## v0.5 — teacher distillation (ToS-whitelisted)
 
-- [ ] `thandv distill --teacher <name>` command
-- [ ] Whitelisted teachers: Gemini free tier, Groq free hosting,
-      Together AI free, OpenRouter free models
-- [ ] Hard exclusion: Anthropic, OpenAI (ToS forbids competing-model
-      training)
-- [ ] Generate training pairs on tasks the eval flags as weak
-- [ ] Feed into the v0.4 trainer
+- [x] `thandv distill --teacher <name>` command with `--prompts-file` and
+      `--prompts-from <public-dataset>` sources
+- [x] Whitelisted teachers (all Llama-3.3-70B-class, OpenAI-compatible):
+      Groq, Together AI, OpenRouter free tiers
+- [x] Hard exclusion at the registry layer: Anthropic, OpenAI. Refused
+      teachers raise with the exact ToS clause and URL.
+- [x] Output lands directly in the training queue with a sidecar
+      `<file>.provenance.json` recording teacher + model id + ToS URL +
+      timestamps
+- [ ] Generate training pairs on tasks the eval flags as weak (next
+      milestone — connects v0.5 to the eval-gate via a "weak prompts" file)
+- [x] Feeds into the v0.4 trainer through the queue (run `thandv train
+      tick` after distillation completes)
 
 ## v0.6 — verifier-filtered synthetic data
 

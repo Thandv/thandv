@@ -150,11 +150,39 @@ Currently registered datasets (extend in `thandv/training_data.py`):
 
 Filenames in the queue carry provenance: `<unix-ts>-<dataset>-n<count>.jsonl`.
 
+Or run a free-tier teacher LLM to generate completions (v0.5+):
+
+```bash
+thandv distill --list                                         # show registered teachers
+export GROQ_API_KEY=...                                       # one-time
+thandv distill --teacher groq-llama-3.3-70b \
+  --prompts-from codealpaca --n 50                            # 50 prompts → distilled
+thandv distill --teacher together-llama-3.3-70b \
+  --prompts-file my_prompts.jsonl                             # your prompts
+```
+
+The output lands in the same queue (one JSONL plus a sidecar
+`<file>.provenance.json` recording the teacher, model id, ToS URL, and
+timestamp).
+
+**Teachers refused at the registry layer** (no `--teacher` codepath, just
+clean error with ToS context):
+
+| Provider  | Why refused |
+|-----------|-------------|
+| Anthropic | Commercial Terms forbid outputs being used to train models that compete with Claude. |
+| OpenAI    | Terms of Use forbid outputs being used to develop models that compete with OpenAI. |
+
+**Teachers whitelisted** (all OpenAI-compatible Llama-3.3-70B-class):
+
+| Name                          | Provider   | Free-tier ceiling (2026-Q1)            |
+|-------------------------------|------------|-----------------------------------------|
+| `groq-llama-3.3-70b`          | Groq       | ~30 RPM / ~14400 tok/min                |
+| `together-llama-3.3-70b`      | Together   | ~60 RPM                                 |
+| `openrouter-llama-3.3-70b`    | OpenRouter | ~20 RPM, 200 req/day                    |
+
 Additional ingestion paths landing in later milestones:
 
-- **Teacher distillation** from ToS-whitelisted free-tier APIs
-  (Gemini free, Groq free, Together free, OpenRouter free models) — v0.5.
-  Excluded: Anthropic, OpenAI — their ToS forbids competing-model training.
 - **Verifier-filtered synthetic data** — v0.6. Generate via free teachers,
   keep only what passes local unit tests / lints. Where the loop actually
   starts compounding.

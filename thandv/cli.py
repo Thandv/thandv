@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -418,6 +419,91 @@ def _cmd_train_enable(args: argparse.Namespace, cfg: Config) -> int:
 
 
 
+def cmd_distill(args: argparse.Namespace) -> int:
+    """Generate (prompt, completion) pairs from a free-tier teacher LLM."""
+    from thandv import teachers, training_data
+
+    if args.list:
+        for t in teachers.list_teachers():
+            key_set = "✓" if os.environ.get(t.api_key_env) else " "
+            print(
+                f"[{key_set}] {t.name:30s} persona={t.persona_hint:6s} "
+                f"key=${t.api_key_env}"
+            )
+            print(f"     {t.description}")
+            print(f"     {t.free_tier_note}")
+            print(f"     ToS: {t.tos_url}")
+        return 0
+
+    # Validate the teacher first — refused providers must surface ToS
+    # context regardless of whether the prompts source is valid.
+    if not args.teacher:
+        print("--teacher is required (or pass --list)", file=sys.stderr)
+        return 2
+    try:
+        teachers.get_teacher(args.teacher)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    # Resolve prompts.
+    prompts: list[str] = []
+    if args.prompts_file:
+        src = Path(args.prompts_file).expanduser()
+        if not src.exists():
+            print(f"not found: {src}", file=sys.stderr)
+            return 2
+        for line in src.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"skipping non-JSON line in {src.name}", file=sys.stderr)
+                continue
+            p = obj.get("prompt") if isinstance(obj, dict) else None
+            if isinstance(p, str) and p:
+                prompts.append(p)
+    elif args.prompts_from:
+        try:
+            examples = training_data.sample_public_dataset(
+                args.prompts_from, args.n, seed=args.seed
+            )
+        except (ValueError, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        prompts = [ex["prompt"] for ex in examples]
+    else:
+        print(
+            "distill needs prompts: --prompts-file <jsonl> OR --prompts-from <dataset>",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.n and len(prompts) > args.n:
+        prompts = prompts[: args.n]
+    if not prompts:
+        print("no prompts to distill", file=sys.stderr)
+        return 2
+
+    def progress(i: int, total: int, status: str) -> None:
+        marker = "." if status == "ok" else "x"
+        print(f"[{i:4d}/{total}] {marker} {status}", flush=True)
+
+    try:
+        queue_path, prov_path = teachers.distill(
+            args.teacher, prompts, on_progress=progress
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    print()
+    print(f"queued:     {queue_path.name}  ({len(prompts)} prompts attempted)")
+    print(f"provenance: {prov_path.name}")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -516,6 +602,36 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the tiny verification training run",
     )
     p_train.set_defaults(func=cmd_train)
+
+    p_distill = sub.add_parser(
+        "distill",
+        help="generate (prompt, completion) pairs from a free-tier teacher LLM",
+    )
+    p_distill.add_argument(
+        "--teacher",
+        help="teacher name (see `thandv distill --list`)",
+    )
+    p_distill.add_argument(
+        "--list", action="store_true",
+        help="list registered teachers and which have API keys set, then exit",
+    )
+    p_distill.add_argument(
+        "--prompts-from",
+        help="pull prompts from a registered public dataset (see `thandv train datasets`)",
+    )
+    p_distill.add_argument(
+        "--prompts-file",
+        help="path to a JSONL file; each line has a 'prompt' field",
+    )
+    p_distill.add_argument(
+        "--n", type=int, default=100,
+        help="max number of prompts to distill (default 100)",
+    )
+    p_distill.add_argument(
+        "--seed", type=int, default=0,
+        help="random seed when pulling prompts from a public dataset",
+    )
+    p_distill.set_defaults(func=cmd_distill)
 
     p_config = sub.add_parser("config", help="show or set config keys")
     p_config.add_argument("--set", action="append", help="key=value", default=[])

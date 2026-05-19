@@ -447,6 +447,111 @@ def test_train_sample_public_writes_queue(thandv_home, monkeypatch, capsys):
     assert "7 examples" in out
 
 
+def test_distill_list_shows_teachers(thandv_home, capsys):
+    rc = main(["distill", "--list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "groq-llama-3.3-70b" in out
+    assert "together-llama-3.3-70b" in out
+    assert "GROQ_API_KEY" in out
+    assert "ToS:" in out
+
+
+def test_distill_refuses_anthropic(thandv_home, capsys):
+    rc = main([
+        "distill",
+        "--teacher", "anthropic-claude",
+        "--prompts-file", "/tmp/nope",  # never reached
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "refused" in err.lower()
+    assert "anthropic" in err.lower()
+
+
+def test_distill_needs_prompts_source(thandv_home, capsys):
+    rc = main(["distill", "--teacher", "groq-llama-3.3-70b"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--prompts-file" in err or "--prompts-from" in err
+
+
+def test_distill_prompts_file_unknown_path(thandv_home, capsys):
+    rc = main([
+        "distill",
+        "--teacher", "groq-llama-3.3-70b",
+        "--prompts-file", "/definitely/not/here.jsonl",
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not found" in err.lower()
+
+
+def test_distill_happy_path_with_prompts_file(thandv_home, monkeypatch, tmp_path, capsys):
+    from thandv import teachers as tch
+
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+
+    pf = tmp_path / "prompts.jsonl"
+    pf.write_text(
+        '{"prompt": "p1"}\n'
+        '{"prompt": "p2"}\n'
+        'not json line\n'
+        '{"no_prompt_field": true}\n'
+    )
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "C"}}]}
+
+    monkeypatch.setattr(tch.requests, "post", lambda *a, **kw: FakeResp())
+
+    rc = main([
+        "distill",
+        "--teacher", "groq-llama-3.3-70b",
+        "--prompts-file", str(pf),
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Only 2 valid prompts in the file (non-JSON and no-prompt-field skipped).
+    assert "2 prompts attempted" in out
+    assert "queued:" in out
+    assert "provenance:" in out
+
+
+def test_distill_happy_path_with_prompts_from_dataset(thandv_home, monkeypatch, capsys):
+    from thandv import teachers as tch, training_data as td
+
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setattr(
+        td, "sample_public_dataset",
+        lambda name, n, seed=0: [
+            {"prompt": f"prompt-{i}", "completion": f"ignored-{i}"}
+            for i in range(n)
+        ],
+    )
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(tch.requests, "post", lambda *a, **kw: FakeResp())
+
+    rc = main([
+        "distill",
+        "--teacher", "groq-llama-3.3-70b",
+        "--prompts-from", "codealpaca",
+        "--n", "3",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "3 prompts attempted" in out
+
+
 def test_train_sample_public_clear_error_without_datasets(thandv_home, monkeypatch, capsys):
     from thandv import training_data as td
 
