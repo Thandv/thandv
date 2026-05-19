@@ -38,4 +38,7 @@ thandv = "thandv.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["thandv*"]
-exclude = ["tests*", "research*", "cpp*", "skills*", "scripts*"]
+exclude = ["tests*", "research*", "cpp*", "scripts*"]
+
+[tool.setuptools.package-data]
+thandv = ["skills/*.md"]

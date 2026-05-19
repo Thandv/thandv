@@ -39,6 +39,12 @@ def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(memory, "SKILLS_DIR", skills)
     monkeypatch.setattr(memory, "MEMORY_DIR", mem)
 
+    # Isolate the bundled-skills dir too so existing tests can write only
+    # the skills they assert on without inheriting the real bundled set.
+    bundled_skills = home / "bundled_skills"
+    bundled_skills.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(memory, "BUNDLED_SKILLS_DIR", bundled_skills)
+
     monkeypatch.setattr(session_promotion, "SESSIONS_DIR", sessions)
 
     monkeypatch.setattr(trainer, "TRAINING_DIR", training)

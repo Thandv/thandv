@@ -24,6 +24,7 @@ class Config:
     max_tokens: int = 4096
     auto_tools: bool = True
     persona: str = "code"  # code | writer | finance
+    finance_paper_trading_enabled: bool = False  # opt-in gate; see paper_trading.py
 
     @classmethod
     def load(cls) -> "Config":

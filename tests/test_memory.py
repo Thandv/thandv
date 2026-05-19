@@ -1,6 +1,13 @@
 import json
 
-from thandv.memory import append_event, load_memory, load_skills, new_session_path
+from thandv import memory
+from thandv.memory import (
+    BUNDLED_SKILLS_DIR,
+    append_event,
+    load_memory,
+    load_skills,
+    new_session_path,
+)
 
 
 def test_load_skills_empty(thandv_home):
@@ -63,3 +70,61 @@ def test_append_event_writes_jsonl(thandv_home):
     assert len(lines) == 2
     assert json.loads(lines[0])["content"] == "hi"
     assert json.loads(lines[1])["content"] == "yo"
+
+
+# --- Bundled skill loading -----------------------------------------------
+
+def test_bundled_skills_load_by_default(thandv_home):
+    """Skills in BUNDLED_SKILLS_DIR are loaded even when the user has
+    nothing under ~/.thandv/skills/. This is the fix that makes
+    persona.skills declarations actually work on a fresh install."""
+    (memory.BUNDLED_SKILLS_DIR / "honesty.md").write_text("bundled honesty body")
+    out = load_skills()
+    assert "bundled honesty body" in out
+    assert "# Skill: honesty" in out
+
+
+def test_user_skill_overrides_bundled(thandv_home):
+    """If both a bundled and user file share a stem, the user wins."""
+    (memory.BUNDLED_SKILLS_DIR / "tool-use.md").write_text("BUNDLED tool-use")
+    (thandv_home / "skills" / "tool-use.md").write_text("USER tool-use")
+    out = load_skills()
+    assert "USER tool-use" in out
+    assert "BUNDLED tool-use" not in out
+
+
+def test_bundled_only_when_user_dir_missing(thandv_home, monkeypatch):
+    """If the user skills dir doesn't exist at all, bundled still loads."""
+    import shutil
+    shutil.rmtree(thandv_home / "skills")
+    (memory.BUNDLED_SKILLS_DIR / "honesty.md").write_text("just bundled")
+    out = load_skills()
+    assert "just bundled" in out
+
+
+def test_only_filter_applies_across_both_dirs(thandv_home):
+    (memory.BUNDLED_SKILLS_DIR / "alpha.md").write_text("bundled-alpha")
+    (memory.BUNDLED_SKILLS_DIR / "beta.md").write_text("bundled-beta")
+    (thandv_home / "skills" / "gamma.md").write_text("user-gamma")
+    out = load_skills(only=("alpha", "gamma"))
+    assert "bundled-alpha" in out
+    assert "user-gamma" in out
+    assert "bundled-beta" not in out
+
+
+def test_real_bundled_skills_dir_ships_strategy_critique():
+    """The bundled `thandv/skills/strategy-critique.md` exists on disk
+    in the source tree (this is what the conftest isolates away). It's
+    also what `[tool.setuptools.package-data]` ships with the wheel."""
+    # _bundled_skills_dir() resolves to thandv/skills in the source tree
+    real = memory._bundled_skills_dir()
+    assert (real / "strategy-critique.md").exists()
+    assert (real / "finance-discipline.md").exists()
+    # Just a smoke check: file is non-empty.
+    assert (real / "strategy-critique.md").read_text().strip()
+
+
+# Silence unused-import lint -- BUNDLED_SKILLS_DIR is imported to document
+# the module contract even though most tests use memory.BUNDLED_SKILLS_DIR
+# after the conftest monkeypatch.
+assert BUNDLED_SKILLS_DIR is not None

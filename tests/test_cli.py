@@ -754,3 +754,131 @@ def test_writer_bundle_clear_flag_keeps_count_stable(thandv_home, monkeypatch, c
     main(["writer", "bundle-style-corpus", "--clear"])
     second = len(rag.load_chunks("writer"))
     assert second == first
+
+
+# --- thandv finance ------------------------------------------------------
+
+def test_finance_no_action_errors(thandv_home, capsys):
+    rc = main(["finance"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "metrics" in err and "paper-trade" in err
+
+
+def test_finance_metrics_happy_path(thandv_home, capsys, tmp_path):
+    p = tmp_path / "px.csv"
+    p.write_text("price\n100\n105\n102\n108\n110\n107\n")
+    rc = main(["finance", "metrics", str(p)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sharpe" in out and "sortino" in out
+    assert "max_drawdown" in out
+    assert "not investment advice" in out.lower()
+
+
+def test_finance_metrics_missing_column(thandv_home, capsys, tmp_path):
+    p = tmp_path / "px.csv"
+    p.write_text("close\n100\n105\n")
+    rc = main(["finance", "metrics", str(p)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing column" in err
+
+
+def test_finance_exposure_happy_path(thandv_home, capsys, tmp_path):
+    p = tmp_path / "pos.csv"
+    p.write_text(
+        "symbol,qty,avg_price,asset_class\n"
+        "AAPL,10,150,equity\n"
+        "TLT,-5,90,bond\n"
+    )
+    rc = main(["finance", "exposure", str(p)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "gross:" in out
+    assert "AAPL" in out and "TLT" in out
+
+
+def test_finance_backtest_happy_path(thandv_home, capsys, tmp_path):
+    px = tmp_path / "px.csv"
+    px.write_text("price\n100\n110\n121\n133.1\n")
+    sig = tmp_path / "sig.csv"
+    sig.write_text("signal\n1\n1\n1\n1\n")
+    rc = main(["finance", "backtest", "--prices", str(px), "--signals", str(sig)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "total_return" in out and "n_trades" in out
+    assert "strategy-critique" in out
+    assert "not investment advice" in out.lower()
+
+
+def test_finance_backtest_length_mismatch(thandv_home, capsys, tmp_path):
+    px = tmp_path / "px.csv"
+    px.write_text("price\n100\n110\n120\n")
+    sig = tmp_path / "sig.csv"
+    sig.write_text("signal\n1\n1\n")
+    rc = main(["finance", "backtest", "--prices", str(px), "--signals", str(sig)])
+    assert rc == 2
+
+
+def test_finance_ingest_filing_happy_path(thandv_home, monkeypatch, capsys, tmp_path):
+    from thandv import rag
+
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+    monkeypatch.setattr(rag, "embed", lambda text: [0.1] * rag.EMBED_DIM)
+
+    f = tmp_path / "aapl-10k.txt"
+    f.write_text("Item 1. Business\n\nApple designs phones.\n\n" * 3)
+    rc = main([
+        "finance", "ingest-filing", str(f),
+        "--type", "10-K", "--ticker", "AAPL",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "AAPL" in out and "10-K" in out
+    chunks = rag.load_chunks("finance")
+    assert all(c.source.startswith("filing::10-K::AAPL::") for c in chunks)
+
+
+def test_finance_ingest_filing_unknown_type(thandv_home, capsys, tmp_path):
+    f = tmp_path / "x.txt"
+    f.write_text("content")
+    rc = main(["finance", "ingest-filing", str(f), "--type", "fake-form"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "unknown filing_type" in err
+
+
+def test_finance_filings_lists_ingested(thandv_home, monkeypatch, capsys, tmp_path):
+    from thandv import filings, rag
+
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+    monkeypatch.setattr(rag, "embed", lambda text: [0.1] * rag.EMBED_DIM)
+
+    f = tmp_path / "msft.txt"
+    f.write_text("Microsoft 10-K excerpt.\n\nAzure growth continues.\n\n" * 3)
+    filings.ingest_filing(f, filing_type="10-K", ticker="MSFT")
+
+    rc = main(["finance", "filings"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "MSFT" in out and "10-K" in out
+
+
+def test_finance_filings_empty_prints_marker(thandv_home, capsys):
+    rc = main(["finance", "filings"])
+    assert rc == 0
+    assert "no filings" in capsys.readouterr().out.lower()
+
+
+def test_finance_paper_trade_status_disabled(thandv_home, monkeypatch, capsys):
+    from thandv import paper_trading as pt
+
+    monkeypatch.setattr(pt, "ADAPTERS", {})
+    rc = main(["finance", "paper-trade"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DISABLED" in out
+    assert "(none)" in out
+    assert "NOT_FINANCIAL_ADVICE" in out
+    assert "register your own" in out.lower()

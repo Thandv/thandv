@@ -83,7 +83,7 @@ tried in priority order:
    field. Activated by sending `tools=TOOL_SCHEMAS` in the chat request.
    This is the cleanest signal: structured, schema-validated, no parsing.
 2. **Text-based `\`\`\`tool\n{...}\n\`\`\`` block** — our explicit fallback
-   protocol documented in `skills/tool-use.md`. Caught by a regex over
+   protocol documented in `thandv/skills/tool-use.md`. Caught by a regex over
    the accumulated content stream. An 8-char tail buffer over chunks
    ensures the marker is detected even when it straddles a boundary.
 3. **Inline JSON in `message.content`** — some smaller models (e.g.
@@ -166,11 +166,15 @@ End-user data: `~/.thandv/` (overridable with `$THANDV_HOME`).
 Repo-side data (loaded at install time):
 
 ```
-skills/                   default skill markdown shipped with the binary
+thandv/skills/            default skill markdown bundled with the wheel
+                          (shipped via [tool.setuptools.package-data])
 personas defined in       thandv/personas.py
 eval suites defined in    thandv/evals.py
 ```
 
-Personas reference skill *stems* (file names without `.md`). A skill not
-present is silently skipped; this is intentional so user-added skills in
-`~/.thandv/skills/` can extend a persona without modifying the repo.
+Skill loading: `memory.load_skills(only=...)` reads the bundled
+`thandv/skills/` directory first, then overlays user files from
+`~/.thandv/skills/` (same stem in user-land overrides bundled). Personas
+reference skill *stems* (file names without `.md`); a skill not present
+in either location is silently skipped, so user-added skills can extend
+a persona without modifying the repo.
