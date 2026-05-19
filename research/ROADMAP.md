@@ -171,12 +171,31 @@ may use free internet sources of good quality.**
 
 ## v0.10 — finance persona deepening
 
-- [ ] Backtesting tools: vectorbt / backtrader wrappers
-- [ ] Portfolio analysis: CSV parsing → Sharpe, Sortino, drawdown, exposure
-- [ ] 10-K / earnings-call ingestion pipeline (RAG)
-- [ ] Strategy-critique skill: lookahead, survivorship, overfitting checks
-- [ ] Paper-trading harness (user-configured broker keys; not bundled)
-- [ ] Refer to [NOT_FINANCIAL_ADVICE.md](../NOT_FINANCIAL_ADVICE.md)
+- [x] Backtesting tool: pure-Python next-day-execution harness in
+      `thandv/finance_tools.py` + `thandv finance backtest`. vectorbt /
+      backtrader NOT bundled — too heavy; users who need them should
+      call them directly. Honest framing on this in the CLI.
+- [x] Portfolio analysis: `thandv finance metrics` (Sharpe/Sortino/max-DD/
+      vol) and `thandv finance exposure` (gross/net/by-asset-class/by-symbol).
+      Pure stdlib, no pandas.
+- [x] 10-K / earnings-call ingestion: `thandv finance ingest-filing` and
+      `thandv finance filings` in `thandv/filings.py`; per-filing
+      provenance `filing::TYPE::TICKER::filename` in source string.
+- [x] Strategy-critique skill: `thandv/skills/strategy-critique.md` covering
+      lookahead, survivorship, overfitting, costs, capacity, regime,
+      significance. Now actually loaded by the FINANCE persona — see the
+      bundled-skill loading fix.
+- [x] Paper-trading harness: `thandv/paper_trading.py` ships a
+      `PaperTradingAdapter` Protocol + opt-in gate
+      (`finance_paper_trading_enabled` config flag). No broker adapters
+      bundled; the gate refuses with clear instructions for both
+      failure modes (no opt-in, no adapter registered).
+- [x] Bundled-skill loading fix: `skills/` moved to `thandv/skills/` and
+      shipped via `[tool.setuptools.package-data]` + PyInstaller `--add-data`.
+      Previously the repo skill files weren't installed at all, so
+      `persona.skills=(...)` declarations silently dropped every entry on
+      a fresh install. Now bundled skills load by default, user files at
+      `~/.thandv/skills/<stem>.md` override.
 
 ## v1.0 — native (C++) build + first stable release
 

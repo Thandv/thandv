@@ -671,6 +671,126 @@ def cmd_writer(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_finance(args: argparse.Namespace) -> int:
+    """`thandv finance ...` subcommands for the finance persona."""
+    action = getattr(args, "finance_action", None)
+
+    if action == "metrics":
+        from thandv import finance_tools as ft
+
+        try:
+            prices = ft.read_prices_csv(args.prices)
+            returns = ft.returns_from_prices(prices)
+            metrics = ft.portfolio_metrics(returns)
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        for k, v in metrics.items():
+            print(f"{k:14s} {v}")
+        print()
+        print("Educational only — not investment advice. Local model, no market edge.")
+        return 0
+
+    if action == "exposure":
+        from thandv import finance_tools as ft
+
+        try:
+            positions = ft.parse_positions_csv(args.positions)
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        summary = ft.exposure_summary(positions)
+        print(f"gross:  {summary['gross']:.2f}")
+        print(f"net:    {summary['net']:.2f}")
+        print("by_asset_class:")
+        for cls, val in sorted(summary["by_asset_class"].items()):
+            print(f"  {cls:12s} {val:.2f}")
+        print("by_symbol:")
+        for sym, val in sorted(summary["by_symbol"].items()):
+            print(f"  {sym:12s} {val:.2f}")
+        return 0
+
+    if action == "backtest":
+        from thandv import finance_tools as ft
+
+        try:
+            prices = ft.read_prices_csv(args.prices)
+            signals = ft.read_signals_csv(args.signals)
+            result = ft.backtest(prices, signals, commission_bps=args.commission_bps)
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        print(f"total_return  {result['total_return']:.4f}")
+        print(f"sharpe        {result['sharpe']:.4f}")
+        print(f"max_drawdown  {result['max_drawdown']:.4f}")
+        print(f"n_trades      {result['n_trades']}")
+        print(f"turnover      {result['turnover']:.4f}")
+        print()
+        print("Run the strategy-critique checklist before quoting this number.")
+        print("Educational only — not investment advice. Local model, no market edge.")
+        return 0
+
+    if action == "ingest-filing":
+        from thandv import filings
+
+        try:
+            chunks = filings.ingest_filing(
+                args.path,
+                filing_type=args.type,
+                ticker=args.ticker,
+            )
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        print(
+            f"ingested {args.path} as {args.type} ({args.ticker or 'no-ticker'}): "
+            f"{chunks} chunks into the finance corpus."
+        )
+        return 0
+
+    if action == "filings":
+        from thandv import filings
+
+        rows = filings.list_filings()
+        if not rows:
+            print("(no filings ingested)")
+            return 0
+        for row in rows:
+            print(
+                f"{row['filing_type']:14s} {row['ticker']:10s} "
+                f"{row['chunks']:4d} chunks  {row['filename']}"
+            )
+        return 0
+
+    if action == "paper-trade":
+        from thandv import paper_trading as pt
+
+        st = pt.status()
+        opted = "ENABLED" if st["opted_in"] else "DISABLED"
+        adapters = st["adapters"]
+        print(f"opt-in:    {opted}")
+        print(f"adapters:  {adapters if adapters else '(none)'}")
+        if not st["opted_in"]:
+            print(
+                "\nPaper trading is off. Read NOT_FINANCIAL_ADVICE.md, then opt in:\n"
+                "    thandv config --set finance_paper_trading_enabled=true"
+            )
+        if not adapters:
+            print(
+                "\nNo broker adapter is bundled. Register your own from user code:\n"
+                "    from thandv import paper_trading\n"
+                "    paper_trading.register_adapter('alpaca', MyAlpacaAdapter())"
+            )
+        return 0
+
+    print(
+        "finance needs an action: metrics, exposure, backtest, "
+        "ingest-filing, filings, paper-trade",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -846,6 +966,48 @@ def main(argv: list[str] | None = None) -> int:
         help="teacher sampling temperature (default 0.7 — higher = more diverse candidates)",
     )
     p_dfilt.set_defaults(func=cmd_distill_filtered)
+
+    p_fin = sub.add_parser("finance", help="finance-persona helpers")
+    fin_sub = p_fin.add_subparsers(dest="finance_action")
+    p_fm = fin_sub.add_parser(
+        "metrics",
+        help="Sharpe / Sortino / max drawdown / volatility from a prices CSV",
+    )
+    p_fm.add_argument("prices", help="CSV with a `price` column")
+    p_fe = fin_sub.add_parser(
+        "exposure",
+        help="gross / net / by-asset-class exposure from a positions CSV",
+    )
+    p_fe.add_argument("positions", help="CSV with symbol,qty,avg_price[,asset_class]")
+    p_fb = fin_sub.add_parser(
+        "backtest",
+        help="pure-Python next-day-execution backtest (sanity check, not production)",
+    )
+    p_fb.add_argument("--prices", required=True, help="CSV with a `price` column")
+    p_fb.add_argument("--signals", required=True, help="CSV with a `signal` column (-1/0/1)")
+    p_fb.add_argument(
+        "--commission-bps", type=float, default=0.0,
+        help="round-trip commission per unit of turnover, in basis points",
+    )
+    p_fi = fin_sub.add_parser(
+        "ingest-filing",
+        help="add a plain-text 10-K / earnings transcript to the finance RAG corpus",
+    )
+    p_fi.add_argument("path", help="path to a plain-text filing")
+    p_fi.add_argument(
+        "--type", default="10-K",
+        help="filing type (10-K, 10-Q, 8-K, earnings-call, annual-report, other)",
+    )
+    p_fi.add_argument("--ticker", help="ticker symbol, e.g. AAPL")
+    fin_sub.add_parser(
+        "filings",
+        help="list filings already ingested under the finance persona",
+    )
+    fin_sub.add_parser(
+        "paper-trade",
+        help="show paper-trading opt-in status and registered adapters",
+    )
+    p_fin.set_defaults(func=cmd_finance)
 
     p_writer = sub.add_parser("writer", help="writer-persona helpers")
     writer_sub = p_writer.add_subparsers(dest="writer_action")

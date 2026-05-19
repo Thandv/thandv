@@ -177,6 +177,36 @@ Embeddings come from Ollama's `nomic-embed-text` (~270MB; `install.sh`
 pulls it automatically). Without it, `ingest` and `retrieve` both refuse to
 run.
 
+### `thandv finance [ACTION]`
+
+Finance-persona helpers. All metrics are computed locally from data you
+provide — nothing fetches live quotes, predicts prices, or recommends
+positions. See [NOT_FINANCIAL_ADVICE.md](../NOT_FINANCIAL_ADVICE.md).
+
+| Action                                                          | Description                                              |
+|-----------------------------------------------------------------|----------------------------------------------------------|
+| `metrics <prices.csv>`                                          | Sharpe, Sortino, max drawdown, volatility, total return from a prices CSV (`price` column required). |
+| `exposure <positions.csv>`                                      | Gross / net / by-asset-class / by-symbol exposure. CSV: `symbol,qty,avg_price[,asset_class]`. |
+| `backtest --prices p.csv --signals s.csv [--commission-bps N]`  | Pure-Python next-day-execution backtest. Signals are -1/0/+1 per row; signal at close of day *i* is applied to day *i+1*'s close-to-close return (the standard lookahead guard). For serious work use vectorbt or backtrader directly. |
+| `ingest-filing <path> [--type TYPE] [--ticker SYM]`             | Add a plain-text 10-K / earnings transcript to the finance RAG corpus with source `filing::TYPE::TICKER::filename`. Pre-process HTML filings with `lynx -dump` or `pandoc -t plain` first. |
+| `filings`                                                       | List filings already ingested under the finance persona. |
+| `paper-trade`                                                   | Show paper-trading opt-in status and registered adapters. Thandv ships ZERO broker integrations: this command is the gate, not the trader. |
+
+**Paper-trading gate.** Enabling paper trading requires *both*:
+
+1. The user opts in: `thandv config --set finance_paper_trading_enabled=true`
+2. A `PaperTradingAdapter` registered from user code (no broker SDK is bundled — see [`thandv/paper_trading.py`](../thandv/paper_trading.py) for the Protocol).
+
+Without both, `paper_trading.require_enabled()` raises `PaperTradingDisabled` with a clear reason.
+
+```bash
+thandv finance metrics ~/data/spy-prices.csv
+thandv finance exposure ~/data/portfolio.csv
+thandv finance backtest --prices px.csv --signals mom.csv --commission-bps 5
+thandv finance ingest-filing ./aapl-10k.txt --type 10-K --ticker AAPL
+thandv finance filings
+```
+
 ### `thandv writer [ACTION]`
 
 Writer-persona helpers.
@@ -219,6 +249,7 @@ Available keys:
 | `max_tokens`  | `4096`      | Max new tokens per turn.                       |
 | `auto_tools`  | `true`      | Whether the agent may emit tool calls.         |
 | `persona`     | `code`      | Default persona (`code` / `writer` / `finance`). |
+| `finance_paper_trading_enabled` | `false` | Opt-in for the paper-trading harness. Without this, `paper_trading.require_enabled()` refuses regardless of registered adapters. |
 
 ## Storage layout
 

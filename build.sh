@@ -15,6 +15,7 @@ python3 -m PyInstaller \
     --name thandv \
     --hidden-import thandv.cli \
     --collect-submodules thandv \
+    --add-data "thandv/skills:thandv/skills" \
     -p . \
     thandv/__main__.py
 

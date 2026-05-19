@@ -71,8 +71,9 @@ Failures block merge. Tests must pass before review.
 
 1. Define a `Persona(...)` in [`thandv/personas.py`](../thandv/personas.py)
    and add it to the `PERSONAS` registry tuple.
-2. Add any skill files it references to [`skills/`](../skills/) (the file
-   stem must match the entry in `persona.skills`).
+2. Add any skill files it references to [`thandv/skills/`](../thandv/skills/)
+   (the file stem must match the entry in `persona.skills`; bundled with
+   the wheel via `[tool.setuptools.package-data]`).
 3. Add tests in [`tests/test_personas.py`](../tests/test_personas.py) —
    at minimum: registration, system-prompt invariants, skill list.
 
@@ -98,8 +99,8 @@ Real benchmarks (HumanEval, MBPP) will come behind a lazy import of
    `"error"` key.
 2. Register it in the `TOOLS` dict.
 3. Add a `# Skill: tool-use` entry to
-   [`skills/tool-use.md`](../skills/tool-use.md) so the model learns
-   about it.
+   [`thandv/skills/tool-use.md`](../thandv/skills/tool-use.md) so the
+   model learns about it.
 4. Tests: success path, missing-arg path, error path. Reuse `tmp_path`.
 
 ## Releases
@@ -113,7 +114,7 @@ release.
 
 ```
 thandv/        the package
-skills/        shipped skill markdown (loaded by personas that list them)
+thandv/skills/ bundled skill markdown (loaded by personas that list them)
 tests/         pytest suite — fast, hermetic, no network
 research/      ROADMAP.md, SELF_IMPROVEMENT.md
 docs/          you are here
