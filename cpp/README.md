@@ -1,6 +1,8 @@
 # cpp/ — native build track
 
 This directory is a placeholder for the native (C++) Thandv build.
+Design note (boundary, protocol, build, phased plan): see
+[`../research/V1.0_NATIVE.md`](../research/V1.0_NATIVE.md).
 
 ## Why a C++ track at all?
 
