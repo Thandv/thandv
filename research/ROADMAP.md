@@ -165,9 +165,35 @@ may use free internet sources of good quality.**
 
 ## v0.9 — image / arts (separate backend)
 
-- [ ] `thandv-image` companion binary using `diffusers` + SDXL / Flux
-- [ ] Shared persona/skills layer, separate model backend
-- [ ] Honest about install-size impact (~6GB extra)
+- [x] `thandv-image` companion entry point shipped (`thandv/image_cli.py`,
+      wired in pyproject `[project.scripts]`). Subcommands:
+      `backends`, `register-placeholder`, `generate`.
+- [x] Shared persona/skills layer: new `IMAGE` persona in
+      `thandv/personas.py` orchestrates the backend, plus
+      `thandv/skills/image-prompting.md`. The persona is honest that it
+      doesn't synthesise pixels itself -- it composes prompts and
+      shells out to `thandv-image`.
+- [x] `ImageBackend` Protocol + opt-in gate in
+      `thandv/image_backend.py`. Mirrors `paper_trading.py`: opt-in flag
+      (`image_generation_enabled` config), `register_backend(...)` for
+      user-land adapters (diffusers + SDXL/Flux, MLX-Image Gen, hosted
+      APIs), `require_enabled()` raises with distinct messages for each
+      failure mode (no opt-in, no backend, multiple without picker,
+      unknown name).
+- [x] `PlaceholderBackend` ships in-tree: writes a 1x1 PPM whose colour
+      is the prompt hash. NOT image generation -- exists only to verify
+      the pipeline end-to-end without GPU dependence or model weights.
+      Honest framing in the module docstring and CLI output.
+- [x] Honest about install-size impact (~6 GB extra): documented in the
+      opt-in error message and the image-prompting skill. No diffusers
+      bundled in pyproject; users add it themselves when they wire a
+      real backend.
+
+**What is intentionally NOT in v0.9:** an actual diffusers + SDXL/Flux
+backend implementation. That work belongs in user-land per the same
+reasoning as paper-trading -- shipping it would imply we've tested it
+end-to-end against the heavy ML stack on multiple GPU/Apple-Silicon
+configurations, which we haven't.
 
 ## v0.10 — finance persona deepening
 

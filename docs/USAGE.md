@@ -59,6 +59,7 @@ prompt and skill subset. Switch with `--persona <name>` on `chat` or `eval`.
 | `code`   | Default. Reads, writes, edits, runs code via local tools.               |
 | `writer` | Drafts and edits prose; outlines essays/chapters; summarises long text. |
 | `finance`| Career and personal-finance work, investment **research** (not advice), strategy code + backtests. See [NOT_FINANCIAL_ADVICE.md](../NOT_FINANCIAL_ADVICE.md). |
+| `image`  | Coordinates the `thandv-image` companion binary. Composes prompts, suggests params; does not synthesise pixels itself. Requires a user-registered `ImageBackend`. |
 
 Set the default persona for new sessions:
 
@@ -207,6 +208,49 @@ thandv finance ingest-filing ./aapl-10k.txt --type 10-K --ticker AAPL
 thandv finance filings
 ```
 
+### `thandv-image` (separate binary)
+
+Image-generation companion to `thandv`. Ships only the contract and a
+1x1 PPM placeholder backend — real backends (diffusers + SDXL/Flux,
+MLX-Image Gen, hosted APIs) plug in from user-land per the same
+opt-in-plus-adapter pattern as `paper_trading`.
+
+| Action                      | Description                                              |
+|-----------------------------|----------------------------------------------------------|
+| `backends`                  | Show opt-in status and registered backends.              |
+| `register-placeholder`      | Register the in-tree `PlaceholderBackend` for pipeline smoke tests (in-process only). |
+| `generate "<prompt>" -o PATH [--backend NAME] [--seed N] [--steps N] [--width W] [--height H] [--guidance F] [--negative-prompt T]` | Generate one image. Requires opt-in + a registered backend. |
+
+**Opt-in.** Image generation is OFF by default:
+
+```bash
+thandv config --set image_generation_enabled=true
+```
+
+Real backends add ~6 GB to install. The opt-in flag is your
+acknowledgement of that; without it `thandv-image generate` refuses
+regardless of registered backends.
+
+**Registering a real backend** (user-land):
+
+```python
+from thandv import image_backend
+
+class MyDiffusersBackend:
+    name = "sdxl"
+    def generate(self, request):
+        # ... call diffusers.StableDiffusionXLPipeline ...
+        return image_backend.GeneratedImage(
+            path=request.out_path, width=1024, height=1024,
+            format="png", backend=self.name,
+        )
+
+image_backend.register_backend("sdxl", MyDiffusersBackend())
+```
+
+See [`thandv/image_backend.py`](../thandv/image_backend.py) for the
+full `ImageBackend` Protocol.
+
 ### `thandv writer [ACTION]`
 
 Writer-persona helpers.
@@ -250,6 +294,7 @@ Available keys:
 | `auto_tools`  | `true`      | Whether the agent may emit tool calls.         |
 | `persona`     | `code`      | Default persona (`code` / `writer` / `finance`). |
 | `finance_paper_trading_enabled` | `false` | Opt-in for the paper-trading harness. Without this, `paper_trading.require_enabled()` refuses regardless of registered adapters. |
+| `image_generation_enabled` | `false` | Opt-in for `thandv-image generate`. Without this, the binary refuses regardless of registered backends. Real backends add ~6 GB to install. |
 
 ## Storage layout
 
