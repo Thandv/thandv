@@ -25,6 +25,7 @@ class Config:
     auto_tools: bool = True
     persona: str = "code"  # code | writer | finance
     finance_paper_trading_enabled: bool = False  # opt-in gate; see paper_trading.py
+    image_generation_enabled: bool = False  # opt-in gate; see image_backend.py
 
     @classmethod
     def load(cls) -> "Config":

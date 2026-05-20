@@ -35,6 +35,7 @@ train-mlx = [
 
 [project.scripts]
 thandv = "thandv.cli:main"
+thandv-image = "thandv.image_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["thandv*"]

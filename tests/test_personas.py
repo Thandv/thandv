@@ -3,6 +3,7 @@ import pytest
 from thandv.personas import (
     CODE,
     FINANCE,
+    IMAGE,
     PERSONAS,
     WRITER,
     get_persona,
@@ -10,15 +11,16 @@ from thandv.personas import (
 )
 
 
-def test_three_personas_registered():
-    assert set(PERSONAS) == {"code", "writer", "finance"}
-    assert list_personas() == ["code", "finance", "writer"]
+def test_four_personas_registered():
+    assert set(PERSONAS) == {"code", "writer", "finance", "image"}
+    assert list_personas() == ["code", "finance", "image", "writer"]
 
 
 def test_get_persona_returns_singleton():
     assert get_persona("code") is CODE
     assert get_persona("writer") is WRITER
     assert get_persona("finance") is FINANCE
+    assert get_persona("image") is IMAGE
 
 
 def test_get_persona_unknown_raises():
@@ -65,3 +67,13 @@ def test_code_prompt_mentions_tools_and_safety():
 def test_all_personas_share_honesty_skill():
     for p in PERSONAS.values():
         assert "honesty" in p.skills, f"{p.name} should include honesty skill"
+
+
+def test_image_persona_is_honest_about_not_generating():
+    """The image persona orchestrates a backend; it must not claim to
+    synthesise pixels itself, and it must mention the install-size
+    reality so users understand what they're getting into."""
+    prompt = IMAGE.system_prompt.lower()
+    assert "do not synthesise images" in prompt or "do not synthesise" in prompt
+    assert "thandv-image" in prompt
+    assert "image-prompting" in IMAGE.skills
