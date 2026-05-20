@@ -225,6 +225,10 @@ configurations, which we haven't.
 
 ## v1.0 — native (C++) build + first stable release
 
+Design note (boundary, JSON-over-stdin/stdout tool protocol, build
+infrastructure, cross-binary contract tests, phased plan):
+[V1.0_NATIVE.md](V1.0_NATIVE.md).
+
 - [ ] `cpp/` minimal native CLI built on llama.cpp
 - [ ] Shared tool protocol with the Python build
 - [ ] Single static binary release on macOS + Linux
