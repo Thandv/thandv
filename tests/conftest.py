@@ -14,6 +14,18 @@ import pytest
 from thandv import config, evals as eval_mod, memory, rag, session_promotion, trainer, training_backend
 
 
+@pytest.fixture(autouse=True)
+def isolate_personas_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point config.PERSONAS_DIR at a fresh empty dir for every test, so disk
+    personas never leak in from the developer's real ~/.thandv. Tests that
+    exercise disk personas request this fixture and write JSON into it.
+    """
+    pdir = tmp_path / "personas_iso"
+    pdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "PERSONAS_DIR", pdir)
+    return pdir
+
+
 @pytest.fixture
 def thandv_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "thandv_home"
