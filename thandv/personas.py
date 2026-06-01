@@ -4,12 +4,16 @@ A persona scopes Thandv to a domain: code, writing, or finance. Each carries
 its own system prompt and skill subset; the base model and tools are shared.
 This is the cheap way to give a single binary three coherent modes.
 
-User-defined personas (loaded from disk) arrive in a later milestone — for
-now, all personas live in this module so they're type-checked and bundled.
+Built-in personas live in this module so they're type-checked and bundled.
+User-defined personas are loaded from `~/.thandv/personas/*.json` at import
+time and merged in (built-ins win on name conflict). This is how external
+tools — e.g. agent-forge's `thandv` adapter — install specialized personas
+(security-auditor, token-optimizer, …) without changing this file.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 
@@ -167,15 +171,57 @@ Honesty:
 )
 
 
+# Built-in personas: the authoritative set, type-checked and bundled.
 PERSONAS: dict[str, Persona] = {p.name: p for p in (CODE, WRITER, FINANCE, IMAGE)}
 DEFAULT_PERSONA = "code"
 
 
+def _load_disk_personas() -> dict[str, Persona]:
+    """Load user-defined personas from `~/.thandv/personas/*.json` (read live).
+
+    Each file: {name, description, system_prompt, skills?, disclaimer?,
+    eval_suite?}. Malformed files are skipped, never fatal. Built-ins win on
+    name conflict, so core personas can't be shadowed. This is how external
+    tools (e.g. agent-forge's `thandv` adapter) add specialized personas.
+    """
+    out: dict[str, Persona] = {}
+    try:
+        from thandv.config import PERSONAS_DIR
+    except Exception:
+        return out
+    if not PERSONAS_DIR.exists():
+        return out
+    for f in sorted(PERSONAS_DIR.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            name = str(data["name"]).strip()
+            prompt = str(data.get("system_prompt", "")).strip()
+            if not name or not prompt or name in PERSONAS:
+                continue
+            out[name] = Persona(
+                name=name,
+                description=str(data.get("description", "")),
+                system_prompt=prompt,
+                skills=tuple(str(s) for s in (data.get("skills") or ())),
+                disclaimer=str(data.get("disclaimer", "")),
+                eval_suite=str(data.get("eval_suite", "smoke")),
+            )
+        except Exception:
+            continue  # never let a bad persona file break the CLI
+    return out
+
+
+def _all_personas() -> dict[str, Persona]:
+    # Disk first, built-ins second so built-ins always win on conflict.
+    return {**_load_disk_personas(), **PERSONAS}
+
+
 def get_persona(name: str) -> Persona:
-    if name not in PERSONAS:
-        raise ValueError(f"unknown persona: {name!r}. Known: {sorted(PERSONAS)}")
-    return PERSONAS[name]
+    personas = _all_personas()
+    if name not in personas:
+        raise ValueError(f"unknown persona: {name!r}. Known: {sorted(personas)}")
+    return personas[name]
 
 
 def list_personas() -> list[str]:
-    return sorted(PERSONAS)
+    return sorted(_all_personas())

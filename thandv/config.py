@@ -11,6 +11,7 @@ THANDV_HOME = Path(os.environ.get("THANDV_HOME", Path.home() / ".thandv"))
 SESSIONS_DIR = THANDV_HOME / "sessions"
 MEMORY_DIR = THANDV_HOME / "memory"
 SKILLS_DIR = THANDV_HOME / "skills"
+PERSONAS_DIR = THANDV_HOME / "personas"
 CONFIG_PATH = THANDV_HOME / "config.json"
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
@@ -40,5 +41,5 @@ class Config:
 
 
 def ensure_dirs() -> None:
-    for d in (THANDV_HOME, SESSIONS_DIR, MEMORY_DIR, SKILLS_DIR):
+    for d in (THANDV_HOME, SESSIONS_DIR, MEMORY_DIR, SKILLS_DIR, PERSONAS_DIR):
         d.mkdir(parents=True, exist_ok=True)
