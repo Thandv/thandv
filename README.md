@@ -2,8 +2,8 @@
 
 A local, open-weights, Claude-style coding assistant. Research scaffolding for
 exploring how far a small, self-hostable agent can be pushed toward
-frontier-model quality through skills, memory, distillation, and adapter
-fine-tuning — without ever sending a token to a paid API.
+frontier-model quality through skills, memory, evaluation, and adapter
+fine-tuning of open models — without ever sending a token to a paid API.
 
 > **Status:** v0.2 — usable scaffold with personas, eval harness, and a
 > background training daemon. Not Claude. See
@@ -112,8 +112,9 @@ Nothing you install locally will be Claude. What you *can* do:
    That part we can copy.
 3. **Specialise via skills, memory, and LoRA.** A 14B model with strong
    skills for *your* codebase often beats a generic 70B on *your* tasks.
-4. **Distill from a frontier teacher** (carefully, and only where licensing
-   permits) to push the small model further on tasks you care about.
+4. **Distil from a larger open-weights teacher** whose licence and terms of
+   use allow it, to push the small model further on tasks you care about.
+   Thandv does not train on outputs from closed models.
 
 See [`research/SELF_IMPROVEMENT.md`](research/SELF_IMPROVEMENT.md) for the
 candid version of what's realistic and what isn't.
