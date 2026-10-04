@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.6"]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5,<0.16"]  # 0.16 changed import sorting: 69 I001 hits on unchanged code
 eval = ["datasets>=2.18"]
 # Apple Silicon training backend. Optional because MLX is macOS-arm64 only
 # and ~600 MB installed; users without it still get the rest of thandv.
