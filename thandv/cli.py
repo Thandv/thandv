@@ -320,7 +320,11 @@ def cmd_train(args: argparse.Namespace) -> int:
         if not src.exists():
             print(f"not found: {src}", file=sys.stderr)
             return 2
-        dst = trainer.enqueue_path(src)
+        try:
+            dst = trainer.enqueue_path(src)
+        except (ValueError, UnicodeDecodeError, IsADirectoryError) as e:
+            print(f"not queued: {e}", file=sys.stderr)
+            return 2
         print(f"queued: {dst.name}")
         return 0
 

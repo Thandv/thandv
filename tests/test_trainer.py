@@ -437,3 +437,55 @@ def test_run_forever_survives_unexpected_tick_error(thandv_home, monkeypatch):
     logs = [json.loads(p.read_text()) for p in trainer.LOGS_DIR.glob("tick-*.json")]
     assert any(o["action"] == "error" and "disk full" in o["reason"] for o in logs)
     assert not trainer.PID_PATH.exists()
+
+
+# --- queue file naming / atomicity ------------------------------------------
+
+def test_enqueue_same_name_same_second_does_not_overwrite(thandv_home, monkeypatch):
+    monkeypatch.setattr(trainer.time, "time", lambda: 1_700_000_000.0)
+    a = enqueue_examples("dup", [{"prompt": "a", "completion": "1"}])
+    b = enqueue_examples("dup", [{"prompt": "b", "completion": "2"}])
+    assert a != b
+    assert queue_size() == 2
+    assert "\"a\"" in a.read_text() and "\"b\"" in b.read_text()
+
+
+def test_enqueue_path_non_jsonl_name_is_still_queued(thandv_home, tmp_path):
+    src = tmp_path / "data.json"
+    src.write_text('{"prompt": "x", "completion": "y"}\n')
+    p = enqueue_path(src)
+    assert p.suffix == ".jsonl"
+    assert queue_size() == 1
+    assert trainer._pop_queue() == p
+
+
+def test_enqueue_path_rejects_malformed_jsonl(thandv_home, tmp_path):
+    import pytest
+
+    src = tmp_path / "bad.jsonl"
+    src.write_text('{"prompt": "x", "completion": "y"}\nnot json\n')
+    with pytest.raises(ValueError, match="line 2"):
+        enqueue_path(src)
+    assert queue_size() == 0
+
+
+def test_queue_writer_hides_file_until_complete(thandv_home):
+    path = trainer.new_queue_path("slow")
+    with trainer.queue_writer(path) as f:
+        f.write('{"prompt": "a", "completion": "b"}\n')
+        # A daemon tick right now must not see a half-written file.
+        assert trainer._pop_queue() is None
+        assert queue_size() == 0
+    assert trainer._pop_queue() == path
+
+
+def test_queue_writer_keeps_partial_output_on_error(thandv_home):
+    import pytest
+
+    path = trainer.new_queue_path("crashy")
+    with pytest.raises(RuntimeError):
+        with trainer.queue_writer(path) as f:
+            f.write('{"prompt": "a", "completion": "b"}\n')
+            raise RuntimeError("teacher died")
+    assert path.exists()
+    assert path.read_text().count("\n") == 1

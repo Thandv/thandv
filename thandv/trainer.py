@@ -29,9 +29,11 @@ import shutil
 import signal
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator, TextIO
 
 from thandv import training_backend as _tb
 from thandv.config import THANDV_HOME
@@ -120,22 +122,83 @@ def save_state(state: TrainerState) -> None:
 
 # --- Queue operations -----------------------------------------------------
 
+def new_queue_path(stem: str) -> Path:
+    """A fresh `QUEUE_DIR/<unix-ts>-<stem>.jsonl` path that doesn't exist.
+
+    The second-resolution timestamp keeps lexical order == FIFO order, but
+    two writers with the same stem in the same second (a scripted
+    `sample-public` loop, two quick `enqueue`s) used to get the same name
+    and the second silently overwrote the first. Disambiguate with a
+    numeric suffix instead.
+    """
+    _ensure_dirs()
+    base = f"{int(time.time())}-{stem}"
+    path = QUEUE_DIR / f"{base}.jsonl"
+    n = 2
+    while path.exists() or _partial_path(path).exists():
+        path = QUEUE_DIR / f"{base}-{n}.jsonl"
+        n += 1
+    return path
+
+
+def _partial_path(path: Path) -> Path:
+    return path.with_name(path.name + ".partial")
+
+
+@contextmanager
+def queue_writer(path: Path) -> Iterator[TextIO]:
+    """Open a queue file for writing without exposing it half-written.
+
+    Writes go to `<path>.partial`, which the daemon's `*.jsonl` glob
+    ignores, and the file is renamed into place when the block exits.
+    Without this a tick firing during a minutes-long `distill` run would
+    train on (and move to processed/) the first few examples, and every
+    later line would follow the moved file out of the queue untrained.
+
+    The rename happens even if the block raises: callers such as
+    `teachers.distill` deliberately keep partial output.
+    """
+    tmp = _partial_path(path)
+    try:
+        with tmp.open("w") as f:
+            yield f
+    finally:
+        if tmp.exists():
+            tmp.replace(path)
+
+
 def enqueue_examples(name: str, examples: list[dict]) -> Path:
     """Append a JSONL file of `{"prompt": ..., "completion": ...}` to the queue."""
-    _ensure_dirs()
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    path = QUEUE_DIR / f"{int(time.time())}-{safe_name}.jsonl"
-    with path.open("w") as f:
+    path = new_queue_path(safe_name)
+    with queue_writer(path) as f:
         for ex in examples:
             f.write(json.dumps(ex) + "\n")
     return path
 
 
 def enqueue_path(src: Path) -> Path:
-    """Copy an existing JSONL file into the queue."""
-    _ensure_dirs()
-    dst = QUEUE_DIR / f"{int(time.time())}-{src.name}"
-    dst.write_bytes(src.read_bytes())
+    """Copy an existing JSONL file into the queue.
+
+    Every non-blank line must be a JSON object; ValueError (with the line
+    number) otherwise, so a malformed file fails here rather than deep
+    inside a training run. The queued copy always ends in `.jsonl` — a
+    `data.json` source used to be queued under a name the daemon never
+    globs, so it was reported as queued but never trained on.
+    """
+    data = src.read_text()
+    for i, line in enumerate(data.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{src}: line {i}: not valid JSON ({e.msg})") from None
+        if not isinstance(obj, dict):
+            raise ValueError(f"{src}: line {i}: expected a JSON object")
+    dst = new_queue_path(src.name.removesuffix(".jsonl"))
+    with queue_writer(dst) as f:
+        f.write(data)
     return dst
 
 

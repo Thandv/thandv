@@ -973,3 +973,11 @@ def test_config_set_bool_spellings(thandv_home, capsys):
     assert Config.load().auto_tools is False
     assert main(["config", "--set", "auto_tools=YES"]) == 0
     assert Config.load().auto_tools is True
+
+
+def test_train_enqueue_rejects_malformed_file(thandv_home, tmp_path, capsys):
+    src = tmp_path / "bad.jsonl"
+    src.write_text("[1, 2, 3]\n")
+    rc = main(["train", "enqueue", str(src)])
+    assert rc == 2
+    assert "not queued" in capsys.readouterr().err
