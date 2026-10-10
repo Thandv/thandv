@@ -61,6 +61,10 @@ class EvalResult:
     reply: str
     passed: bool
     secs: float
+    # Non-empty when the task never got a model reply (Ollama down, HTTP
+    # error, in-band model error). Such a task is a failed *run*, not a
+    # failed *answer*; callers gating on pass rate must not score it.
+    error: str = ""
 
 
 # --- Verifiers --------------------------------------------------------------
@@ -960,10 +964,12 @@ def run_suite(
         cfg = Config(model=model, persona=persona.name)
         agent = Agent(config=cfg, persona=persona)
         t0 = time.time()
+        error = ""
         try:
             reply = "".join(agent.turn(task.prompt))
         except Exception as e:
-            reply = f"<error: {type(e).__name__}: {e}>"
+            error = f"{type(e).__name__}: {e}"
+            reply = f"<error: {error}>"
         secs = time.time() - t0
         try:
             passed = task.verify(reply)
@@ -977,6 +983,7 @@ def run_suite(
             reply=reply,
             passed=passed,
             secs=secs,
+            error=error,
         )
         results.append(result)
         if on_progress:

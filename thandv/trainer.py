@@ -387,10 +387,24 @@ def tick(
 
 
 def _run_eval(model: str, suite: str = "smoke") -> float:
-    """Return the pass rate (0.0–1.0) of `suite` for `model`."""
+    """Return the pass rate (0.0–1.0) of `suite` for `model`.
+
+    Raises RuntimeError if any task errored instead of producing a reply.
+    `run_suite` records such tasks as failures, which is right for a
+    human-read report but wrong for the promotion gate: with Ollama down
+    every task "fails", so a baseline would be locked in at 0.0 (and any
+    later adapter would beat it), or a good new adapter would be scored
+    0.0 and discarded. Raising lets `tick` take its skip path instead.
+    """
     results = run_suite(suite, model=model)
     if not results:
         return 0.0
+    errored = [r for r in results if r.error]
+    if errored:
+        raise RuntimeError(
+            f"{len(errored)}/{len(results)} eval tasks errored "
+            f"(first: {errored[0].task_id}: {errored[0].error})"
+        )
     return sum(1 for r in results if r.passed) / len(results)
 
 
@@ -414,17 +428,32 @@ def run_forever(model: str, persona: str = "code", interval_s: int = 300) -> Non
     def _term(_signum, _frame):
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _term)
+    prev_handler = signal.signal(signal.SIGTERM, _term)
 
     try:
         while True:
             if not load_state().paused:
-                tick(model, persona)
+                try:
+                    tick(model, persona)
+                except Exception as e:
+                    # tick() already turns expected failures into "skip"
+                    # outcomes; anything that still escapes (corrupt
+                    # state file, disk full, ...) is logged and retried
+                    # next interval instead of killing the daemon.
+                    _log_outcome(
+                        {
+                            "action": "error",
+                            "reason": f"{type(e).__name__}: {e}",
+                            "persona": persona,
+                            "at": _now(),
+                        }
+                    )
             time.sleep(interval_s)
     except KeyboardInterrupt:
         pass
     finally:
         PID_PATH.unlink(missing_ok=True)
+        signal.signal(signal.SIGTERM, prev_handler)
 
 
 def is_running() -> bool:

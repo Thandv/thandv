@@ -363,3 +363,77 @@ def test_is_running_when_dead_pid(thandv_home, monkeypatch):
 
 def test_stop_when_not_running(thandv_home):
     assert trainer.stop() is False
+
+
+# --- eval gate vs. infrastructure errors -----------------------------------
+
+def _results(n_ok_pass: int, n_ok_fail: int, n_err: int):
+    from thandv.evals import EvalResult
+
+    out = []
+    for i in range(n_ok_pass):
+        out.append(EvalResult(f"p{i}", "smoke", "m", "code", "ok", True, 0.1))
+    for i in range(n_ok_fail):
+        out.append(EvalResult(f"f{i}", "smoke", "m", "code", "no", False, 0.1))
+    for i in range(n_err):
+        out.append(
+            EvalResult(f"e{i}", "smoke", "m", "code", "<error>", False, 0.1,
+                       error="ConnectionError: refused")
+        )
+    return out
+
+
+def test_run_eval_raises_when_tasks_errored(thandv_home, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(trainer, "run_suite", lambda suite, model: _results(1, 0, 2))
+    with pytest.raises(RuntimeError, match="2/3 eval tasks errored"):
+        trainer._run_eval("m")
+
+
+def test_run_eval_scores_genuine_failures(thandv_home, monkeypatch):
+    monkeypatch.setattr(trainer, "run_suite", lambda suite, model: _results(1, 3, 0))
+    assert trainer._run_eval("m") == 0.25
+
+
+def test_baseline_not_locked_at_zero_when_ollama_down(thandv_home, monkeypatch):
+    """End to end through the real run_suite: every agent turn fails with a
+    connection error. The tick must skip, not record a 0.0 baseline."""
+    import requests
+
+    from thandv import evals as eval_mod
+
+    class DownAgent:
+        def __init__(self, config, persona=None):
+            pass
+
+        def turn(self, prompt):
+            raise requests.ConnectionError("connection refused")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(eval_mod, "Agent", DownAgent)
+    out = tick("fake-model")
+    assert out["action"] == "skip"
+    assert "baseline eval failed" in out["reason"]
+    assert "code" not in load_state().best_by_persona
+
+
+def test_run_forever_survives_unexpected_tick_error(thandv_home, monkeypatch):
+    calls = {"tick": 0, "sleep": 0}
+
+    def bad_tick(model, persona):
+        calls["tick"] += 1
+        raise OSError("disk full")
+
+    def fake_sleep(_s):
+        calls["sleep"] += 1
+        if calls["sleep"] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(trainer, "tick", bad_tick)
+    monkeypatch.setattr(trainer.time, "sleep", fake_sleep)
+    trainer.run_forever("m", "code", interval_s=0)
+    assert calls["tick"] == 2
+    logs = [json.loads(p.read_text()) for p in trainer.LOGS_DIR.glob("tick-*.json")]
+    assert any(o["action"] == "error" and "disk full" in o["reason"] for o in logs)
+    assert not trainer.PID_PATH.exists()
