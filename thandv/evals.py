@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,7 @@ from typing import Callable
 from thandv.agent import Agent
 from thandv.config import THANDV_HOME, Config, ensure_dirs
 from thandv.personas import get_persona
+from thandv.tools import run_with_timeout
 
 
 @dataclass
@@ -68,23 +70,66 @@ def _contains(needle: str) -> Callable[[str], bool]:
     return lambda reply: n in reply.lower()
 
 
+SMOKE_TIMEOUT_S = 10
+
+
+def run_python_sandboxed(files: dict[str, str], entry: str, timeout: float) -> bool:
+    """Run `entry` (one of `files`) in a fresh subprocess; True iff it
+    completes its checks.
+
+    Best-effort sandbox, shared by every code-executing verifier:
+    - a fresh temporary directory as cwd and script dir, so stray writes
+      land there and a planted `json.py` next to the user's cwd can't
+      shadow the stdlib;
+    - `-E` so PYTHONPATH / PYTHONSTARTUP and friends don't leak in;
+    - stdin is /dev/null and the whole process group is killed on
+      timeout (see `tools.run_with_timeout`);
+    - completion is proved by a per-run random token that the harness
+      prints *after* its checks pass. Exit code 0 alone isn't enough:
+      model code that calls `sys.exit(0)` / `os._exit(0)` before the
+      tests run would otherwise be scored as a pass — exactly the kind of
+      reward hack verifier-filtered distillation must not learn from.
+
+    `files[entry]` must contain the placeholder `{{SENTINEL}}` where the
+    harness prints the token (see the verifiers below).
+    Not a security boundary: see "Sandbox honesty" in docs/USAGE.md.
+    """
+    token = secrets.token_hex(16)
+    with tempfile.TemporaryDirectory(prefix="thandv-verify-") as td:
+        for name, content in files.items():
+            if name == entry:
+                content = content.replace("{{SENTINEL}}", repr(token))
+            (Path(td) / name).write_text(content, encoding="utf-8")
+        try:
+            proc = run_with_timeout(
+                [sys.executable, "-E", entry],
+                timeout=timeout,
+                cwd=td,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
+    return proc.returncode == 0 and token in proc.stdout.splitlines()
+
+
+_IS_PRIME_HARNESS = """
+
+_cases = [(2, True), (3, True), (4, False), (5, True), (9, False), (11, True), (1, False)]
+assert all(is_prime(_n) is _expected for _n, _expected in _cases)
+print({{SENTINEL}})
+"""
+
+
 def _is_prime_function(reply: str) -> bool:
-    """Exec the reply and check `is_prime` on a handful of cases."""
+    """Run the reply in a subprocess and check `is_prime` on a handful of
+    cases. Subprocess (not in-process `exec`) so a non-terminating or
+    `sys.exit()`-calling reply can't hang or kill the eval runner."""
     m = re.search(r"```(?:python)?\n(.+?)\n```", reply, re.DOTALL)
     code = m.group(1) if m else reply
-    namespace: dict = {}
-    try:
-        exec(code, namespace)
-    except Exception:
-        return False
-    fn = namespace.get("is_prime")
-    if not callable(fn):
-        return False
-    cases = [(2, True), (3, True), (4, False), (5, True), (9, False), (11, True), (1, False)]
-    try:
-        return all(fn(n) is expected for n, expected in cases)
-    except Exception:
-        return False
+    return run_python_sandboxed(
+        {"main.py": code + _IS_PRIME_HARNESS}, "main.py", SMOKE_TIMEOUT_S
+    )
 
 
 # --- Suites -----------------------------------------------------------------
@@ -573,27 +618,13 @@ def _humaneval_verifier(test_code: str, entry_point: str) -> Callable[[str], boo
 
     def verify(reply: str) -> bool:
         code = _extract_python_code(reply)
-        program = code + "\n\n" + test_code + f"\n\ncheck({entry_point})\n"
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-            f.write(program)
-            path = f.name
-        try:
-            proc = subprocess.run(
-                [sys.executable, path],
-                capture_output=True,
-                text=True,
-                timeout=HUMANEVAL_TIMEOUT_S,
-            )
-            return proc.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
-        except Exception:
-            return False
-        finally:
-            try:
-                Path(path).unlink()
-            except OSError:
-                pass
+        program = (
+            code + "\n\n" + test_code
+            + f"\n\ncheck({entry_point})\nprint({{{{SENTINEL}}}})\n"
+        )
+        return run_python_sandboxed(
+            {"main.py": program}, "main.py", HUMANEVAL_TIMEOUT_S
+        )
 
     return verify
 
@@ -664,27 +695,8 @@ def _mbpp_verifier(test_list: list[str]) -> Callable[[str], bool]:
 
     def verify(reply: str) -> bool:
         code = _extract_python_code(reply)
-        program = code + "\n\n" + tests + "\n"
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-            f.write(program)
-            path = f.name
-        try:
-            proc = subprocess.run(
-                [sys.executable, path],
-                capture_output=True,
-                text=True,
-                timeout=MBPP_TIMEOUT_S,
-            )
-            return proc.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
-        except Exception:
-            return False
-        finally:
-            try:
-                Path(path).unlink()
-            except OSError:
-                pass
+        program = code + "\n\n" + tests + "\nprint({{SENTINEL}})\n"
+        return run_python_sandboxed({"main.py": program}, "main.py", MBPP_TIMEOUT_S)
 
     return verify
 
@@ -759,27 +771,32 @@ SUITES[MBPP.name] = MBPP
 SWE_LITE_TIMEOUT_S = 20
 
 
+_SWE_LITE_RUNNER = """\
+import sys
+import unittest
+
+suite = unittest.defaultTestLoader.loadTestsFromName("test_solution")
+result = unittest.TextTestRunner(verbosity=0).run(suite)
+if result.wasSuccessful() and result.testsRun > 0:
+    print({{SENTINEL}})
+sys.exit(0 if result.wasSuccessful() else 1)
+"""
+
+
 def _swe_lite_verifier(test_code: str) -> Callable[[str], bool]:
     """Run the model's corrected solution against the task's unittest."""
 
     def verify(reply: str) -> bool:
         code = _extract_python_code(reply)
-        with tempfile.TemporaryDirectory() as td:
-            (Path(td) / "solution.py").write_text(code)
-            (Path(td) / "test_solution.py").write_text(test_code)
-            try:
-                proc = subprocess.run(
-                    [sys.executable, "test_solution.py"],
-                    cwd=td,
-                    capture_output=True,
-                    text=True,
-                    timeout=SWE_LITE_TIMEOUT_S,
-                )
-                return proc.returncode == 0
-            except subprocess.TimeoutExpired:
-                return False
-            except Exception:
-                return False
+        return run_python_sandboxed(
+            {
+                "solution.py": code,
+                "test_solution.py": test_code,
+                "_run_tests.py": _SWE_LITE_RUNNER,
+            },
+            "_run_tests.py",
+            SWE_LITE_TIMEOUT_S,
+        )
 
     return verify
 

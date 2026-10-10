@@ -148,10 +148,15 @@ they're stable):
 | `qwen2.5-coder:7b`   | `mbpp` (full 257)      | **206/257 (80.2%)** after the prompt fix — tracks the published pass@1 for this model. (Pre-fix run scored 7.4% because the prompt didn't carry the expected function name.) | M2 16 GB |
 | `qwen2.5-coder:7b`   | `swe-lite`             | **3/3 (100%)** — the scaffold tasks are easy on purpose; real signal lands when we integrate the actual SWE-Bench dataset | M2 16 GB |
 
-**Sandbox honesty.** The HumanEval verifier runs model-generated Python in
-a subprocess with a 10 s timeout. That's enough for research; do *not*
-run `thandv eval humaneval` against an untrusted model or in a shared
-environment. The model can write whatever Python it wants.
+**Sandbox honesty.** The code-executing verifiers (`smoke`'s `is-prime`,
+`humaneval`, `mbpp`, `swe-lite`) run model-generated Python in a
+subprocess with a timeout, inside a fresh temporary directory, with stdin
+closed and the whole process group killed on timeout. A pass requires a
+per-run random token printed *after* the tests finish, so a completion
+that just calls `sys.exit(0)` scores as a fail. That's enough for
+research; it is not isolation — there is no filesystem or network
+jail. Do *not* run these suites against an untrusted model or in a
+shared environment. The model can write whatever Python it wants.
 
 ### `thandv ingest [PATH] [--persona NAME] [--stats] [--clear]`
 
