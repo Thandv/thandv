@@ -285,6 +285,22 @@ def _discard_adapter(adapter_id: str, ollama_model: str) -> None:
 
 # --- Tick: one full train → eval → promote cycle --------------------------
 
+def _save_tick_state(state: TrainerState) -> None:
+    """Persist a tick's state without clobbering a concurrent pause.
+
+    tick() loads the state at the start and saves at the end, and the
+    train + eval in between can take many minutes. `thandv train pause`
+    issued meanwhile wrote paused=True, which the tick's stale copy then
+    overwrote with False - the pause was silently lost. The paused flag
+    is owned by pause()/resume(), so re-read it from disk before saving.
+    """
+    try:
+        state.paused = load_state().paused
+    except (OSError, ValueError, TypeError):
+        pass  # unreadable state file: keep the tick's view
+    save_state(state)
+
+
 def _log_outcome(outcome: dict) -> dict:
     _ensure_dirs()
     log_path = LOGS_DIR / f"tick-{time.time_ns()}.json"
@@ -327,7 +343,7 @@ def tick(
         try:
             baseline = _run_eval(current_best_model, suite=suite)
         except Exception as e:
-            save_state(state)
+            _save_tick_state(state)
             return _log_outcome(
                 {
                     "action": "skip",
@@ -343,7 +359,7 @@ def tick(
         state.baseline_measured = True
         # Lock the persona's active model to base if nothing's been promoted.
         state.active_models_by_persona.setdefault(persona, base_model)
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "baseline",
@@ -357,13 +373,13 @@ def tick(
 
     queue_file = _pop_queue()
     if queue_file is None:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {"action": "skip", "reason": "queue empty", "persona": persona, "at": _now()}
         )
 
     if dry_run:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -383,7 +399,7 @@ def tick(
             hf_base_repo=state.hf_base_model or None,
         )
     except Exception as e:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -399,7 +415,7 @@ def tick(
         new_rate = _run_eval(new_ollama_model, suite=suite)
     except Exception as e:
         _discard_adapter(adapter_id, new_ollama_model)
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -432,7 +448,7 @@ def tick(
 
     # Consume the queue file regardless.
     queue_file.rename(PROCESSED_DIR / queue_file.name)
-    save_state(state)
+    _save_tick_state(state)
 
     return _log_outcome(
         {

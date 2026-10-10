@@ -489,3 +489,23 @@ def test_queue_writer_keeps_partial_output_on_error(thandv_home):
             raise RuntimeError("teacher died")
     assert path.exists()
     assert path.read_text().count("\n") == 1
+
+
+def test_pause_during_tick_is_not_reverted(thandv_home, monkeypatch):
+    """`train pause` issued while a tick is training must survive the
+    tick's final save_state."""
+    state = TrainerState(best_by_persona={"code": 0.5})
+    save_state(state)
+    enqueue_examples("a", [{"prompt": "p", "completion": "c"}])
+
+    def slow_train(queue_file, base, hf_base_repo=None):
+        pause()  # user runs `thandv train pause` mid-training
+        return "adapter-1", "thandv-adapter-1"
+
+    monkeypatch.setattr(trainer, "_train_lora", slow_train)
+    monkeypatch.setattr(trainer, "_run_eval", lambda m, suite=None: 0.9)
+    out = tick("fake-model")
+    assert out["action"] == "promote"
+    s = load_state()
+    assert s.paused is True
+    assert s.best_by_persona["code"] == 0.9
