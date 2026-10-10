@@ -27,11 +27,41 @@ def read_file(path: str) -> dict[str, Any]:
         return {"error": f"not found: {p}"}
     if p.is_dir():
         return {"error": f"is a directory: {p}"}
-    data = p.read_bytes()[:MAX_READ_BYTES]
+    with p.open("rb") as f:
+        # Read one byte past the cap so we know whether we truncated
+        # without loading arbitrarily large files into memory.
+        data = f.read(MAX_READ_BYTES + 1)
+    truncated = len(data) > MAX_READ_BYTES
+    data = data[:MAX_READ_BYTES]
     try:
-        return {"path": str(p), "content": data.decode("utf-8")}
+        content = _decode_utf8_prefix(data, truncated)
     except UnicodeDecodeError:
         return {"path": str(p), "content": f"<binary, {len(data)} bytes>"}
+    out: dict[str, Any] = {"path": str(p), "content": content}
+    if truncated:
+        out["truncated"] = True
+    return out
+
+
+def _decode_utf8_prefix(data: bytes, truncated: bool) -> str:
+    """Decode `data` as UTF-8, tolerating a multi-byte character split by
+    the truncation cap.
+
+    A UTF-8 character is at most 4 bytes, so when the cap cut the file we
+    retry without up to 3 trailing bytes before concluding the file is
+    binary. Untruncated input must decode cleanly.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        if not truncated:
+            raise
+        for cut in range(1, 4):
+            try:
+                return data[:-cut].decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        raise
 
 
 def write_file(path: str, content: str) -> dict[str, Any]:
@@ -126,7 +156,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 file from disk. Content is truncated to 200 KB.",
+            "description": (
+                "Read a UTF-8 file from disk. Content is truncated to 200 KB; "
+                "the result carries `truncated: true` when that happens."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

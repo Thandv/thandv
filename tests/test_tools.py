@@ -219,3 +219,29 @@ def test_retrieve_schema_includes_persona_override():
     assert "persona" in fn["parameters"]["properties"]
     # persona is NOT in required — the runtime fills it in.
     assert "persona" not in fn["parameters"].get("required", [])
+
+
+def test_read_file_flags_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "MAX_READ_BYTES", 10)
+    p = tmp_path / "big.txt"
+    p.write_text("abcdefghijklmnop")
+    assert read_file(str(p))["truncated"] is True
+    small = tmp_path / "small.txt"
+    small.write_text("abc")
+    assert "truncated" not in read_file(str(small))
+
+
+def test_read_file_truncation_mid_multibyte_char_is_still_text(tmp_path, monkeypatch):
+    """A cap that splits a UTF-8 character must not flip the file to <binary>."""
+    monkeypatch.setattr(tools, "MAX_READ_BYTES", 4)
+    p = tmp_path / "utf8.txt"
+    p.write_text("abcé and more", encoding="utf-8")  # 'é' is bytes 4-5
+    out = read_file(str(p))
+    assert out["content"] == "abc"
+    assert out["truncated"] is True
+
+
+def test_read_file_real_binary_still_reported(tmp_path):
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"\xff\xfe\x00\x81" * 4)
+    assert read_file(str(p))["content"].startswith("<binary")
