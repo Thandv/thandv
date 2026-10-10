@@ -981,3 +981,20 @@ def test_train_enqueue_rejects_malformed_file(thandv_home, tmp_path, capsys):
     rc = main(["train", "enqueue", str(src)])
     assert rc == 2
     assert "not queued" in capsys.readouterr().err
+
+
+def test_ingest_reports_embedding_failure(thandv_home, monkeypatch, tmp_path, capsys):
+    from thandv import cli, rag
+
+    src = tmp_path / "doc.md"
+    src.write_text("hello")
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+
+    def down(_text):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(rag, "embed", down)
+    rc = main(["ingest", str(src), "--persona", "code"])
+    assert rc == 2
+    assert "ingest failed" in capsys.readouterr().err

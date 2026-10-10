@@ -163,7 +163,11 @@ shared environment. The model can write whatever Python it wants.
 Ingest a file or directory into a persona's local corpus. Used by the
 `retrieve` tool inside agent sessions to look up relevant chunks before
 answering. Supported file extensions: `.md`, `.markdown`, `.txt`, `.rst`,
-`.py`, `.pyi`. Directories are walked recursively.
+`.py`, `.pyi` (case-insensitive). Directories are walked recursively,
+skipping hidden entries (`.git/`, `.venv/`, dotfiles, ...) and
+`node_modules/`, `__pycache__/`, `site-packages/`, `venv/`,
+`build/`, `dist/`, so `thandv ingest .` in a checkout embeds your code
+rather than your dependencies.
 
 ```bash
 thandv ingest README.md                            # default persona "all"

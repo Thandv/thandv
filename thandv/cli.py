@@ -274,7 +274,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     print(f"ingesting {src} into persona={persona} ...")
-    files, chunks = rag.ingest_path(src, persona=persona)
+    try:
+        files, chunks = rag.ingest_path(src, persona=persona)
+    except RuntimeError as e:
+        # Embedding failed part-way (Ollama stopped, model unloaded).
+        # Chunks written before the failure stay in the corpus.
+        print(f"ingest failed: {e}", file=sys.stderr)
+        return 2
     print(f"done. files={files} chunks={chunks}")
     return 0
 
