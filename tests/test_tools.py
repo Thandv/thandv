@@ -245,3 +245,32 @@ def test_read_file_real_binary_still_reported(tmp_path):
     p = tmp_path / "blob.bin"
     p.write_bytes(b"\xff\xfe\x00\x81" * 4)
     assert read_file(str(p))["content"].startswith("<binary")
+
+
+def test_edit_file_preserves_crlf_line_endings(tmp_path):
+    p = tmp_path / "win.txt"
+    p.write_bytes(b"line one\r\nline two\r\nline three\r\n")
+    out = edit_file(str(p), "line two", "LINE TWO")
+    assert out["ok"] is True
+    assert p.read_bytes() == b"line one\r\nLINE TWO\r\nline three\r\n"
+
+
+def test_edit_file_matches_lf_snippet_against_crlf_file(tmp_path):
+    p = tmp_path / "win.py"
+    p.write_bytes(b"def f():\r\n    return 1\r\n")
+    out = edit_file(str(p), "def f():\n    return 1", "def f():\n    return 2")
+    assert out["ok"] is True
+    assert p.read_bytes() == b"def f():\r\n    return 2\r\n"
+
+
+def test_edit_file_rejects_empty_old(tmp_path):
+    p = tmp_path / "empty.txt"
+    p.write_text("")
+    out = edit_file(str(p), "", "injected")
+    assert "error" in out and "non-empty" in out["error"]
+    assert p.read_text() == ""
+
+
+def test_edit_file_on_directory(tmp_path):
+    out = edit_file(str(tmp_path), "a", "b")
+    assert "error" in out and "directory" in out["error"]

@@ -67,7 +67,7 @@ def _decode_utf8_prefix(data: bytes, truncated: bool) -> str:
 def write_file(path: str, content: str) -> dict[str, Any]:
     p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    p.write_text(content, encoding="utf-8")
     return {"path": str(p), "bytes": len(content.encode("utf-8"))}
 
 
@@ -75,13 +75,32 @@ def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
     p = _resolve(path)
     if not p.exists():
         return {"error": f"not found: {p}"}
-    text = p.read_text()
+    if p.is_dir():
+        return {"error": f"is a directory: {p}"}
+    if not old:
+        return {"error": "old string must be non-empty; use write_file to create or overwrite"}
+    # newline="" disables universal-newline translation in both directions,
+    # so a CRLF file stays CRLF after the edit instead of being silently
+    # rewritten with LF endings on every line.
+    with p.open(encoding="utf-8", newline="") as f:
+        text = f.read()
+    if old not in text and "\r\n" in text:
+        # The model almost always sends LF-only snippets. Match them
+        # against a CRLF file by converting the snippet's endings.
+        old_crlf = _to_crlf(old)
+        if old_crlf in text:
+            old, new = old_crlf, _to_crlf(new)
     if old not in text:
         return {"error": "old string not found"}
     if text.count(old) > 1:
         return {"error": "old string is not unique; include more context"}
-    p.write_text(text.replace(old, new, 1))
+    with p.open("w", encoding="utf-8", newline="") as f:
+        f.write(text.replace(old, new, 1))
     return {"path": str(p), "ok": True}
+
+
+def _to_crlf(s: str) -> str:
+    return s.replace("\r\n", "\n").replace("\n", "\r\n")
 
 
 def list_dir(path: str = ".") -> dict[str, Any]:
