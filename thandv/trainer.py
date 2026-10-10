@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Iterator, TextIO
 
 from thandv import training_backend as _tb
-from thandv.config import THANDV_HOME
+from thandv.config import THANDV_HOME, atomic_write_text
 from thandv.evals import run_suite
 
 TRAINING_DIR = THANDV_HOME / "training"
@@ -117,7 +117,7 @@ def load_state() -> TrainerState:
 
 def save_state(state: TrainerState) -> None:
     _ensure_dirs()
-    STATE_PATH.write_text(json.dumps(asdict(state), indent=2))
+    atomic_write_text(STATE_PATH, json.dumps(asdict(state), indent=2))
 
 
 # --- Queue operations -----------------------------------------------------

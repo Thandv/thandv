@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 from thandv.agent import Agent
-from thandv.config import THANDV_HOME, Config, ensure_dirs
+from thandv.config import THANDV_HOME, Config, atomic_write_text, ensure_dirs
 from thandv.personas import get_persona
 from thandv.tools import run_with_timeout
 
@@ -1033,7 +1033,7 @@ def load_best_records() -> dict[str, dict]:
 
 def save_best_records(records: dict[str, dict]) -> None:
     BEST_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BEST_RECORDS_PATH.write_text(json.dumps(records, indent=2, sort_keys=True))
+    atomic_write_text(BEST_RECORDS_PATH, json.dumps(records, indent=2, sort_keys=True))
 
 
 def get_best(suite: str, persona: str) -> dict | None:
