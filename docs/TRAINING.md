@@ -150,7 +150,11 @@ Currently registered datasets (extend in `thandv/training_data.py`):
 | `wikitext`    | cc-by-sa-3.0   | writer       | Wikitext-2 raw train split (~12 MB, ~36k rows). Continuation-style pairs: prompt = "Continue the following passage…" + head ~60%, completion = remainder. Section-heading rows produce trivial pairs; trainer is expected to skip them. |
 | `tinystories` | cdla-sharing-1.0 | writer     | Short synthetic stories (Eldan & Li 2023; ~150 MB train). Generated with GPT-3.5/4 — review upstream license before training a model you'll distribute commercially. Same continuation-style framing as `wikitext`. |
 
-Filenames in the queue carry provenance: `<unix-ts>-<dataset>-n<count>.jsonl`.
+Filenames in the queue carry provenance: `<unix-ts>-<dataset>-n<count>.jsonl`
+(a `-2`, `-3`, ... suffix disambiguates same-second collisions). Producers
+write to `<name>.jsonl.partial` and rename when done, so the daemon never
+trains on a half-written file; a leftover `.partial` means a producer
+crashed mid-write.
 
 Or run a free-tier teacher LLM to generate completions (v0.5+):
 
