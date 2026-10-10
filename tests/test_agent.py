@@ -556,3 +556,18 @@ def test_raw_stream_tolerates_null_message(thandv_home, monkeypatch):
     monkeypatch.setattr(agent_mod.requests, "post", lambda *a, **k: _FakeResponse(lines))
     agent = Agent(config=Config(model="fake-model"))
     assert list(agent._raw_stream()) == ["hi"]
+
+
+def test_turn_shows_malformed_tool_block_instead_of_swallowing(thandv_home, monkeypatch):
+    reply = "Trying a tool.\n```tool\n{not valid json}\n```\nand some trailing text"
+    agent = _agent_chunked(thandv_home, monkeypatch, [["Trying a tool.\n", reply[len("Trying a tool.\n"):]]])
+    out = "".join(agent.turn("go"))
+    assert out == reply
+    assert "[tool]" not in out
+
+
+def test_turn_shows_unterminated_tool_block(thandv_home, monkeypatch):
+    reply = "```tool\n{\"name\": \"read_file\", \"args\": {\"path\": \"x\"}}"  # no closing fence
+    agent = _agent(thandv_home, monkeypatch, [reply])
+    out = "".join(agent.turn("go"))
+    assert out == reply

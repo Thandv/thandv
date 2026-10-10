@@ -201,6 +201,7 @@ class Agent:
             full = ""
             pending = ""
             in_tool_block = False
+            block_start = 0  # offset in `full` where the hidden block began
             json_buffer_mode = False
             mode_decided = False
             self._pending_tool_calls = []
@@ -230,6 +231,7 @@ class Agent:
                 if idx >= 0:
                     if idx > 0:
                         yield pending[:idx]
+                    block_start = len(full) - len(pending) + idx
                     pending = ""
                     in_tool_block = True
                     continue
@@ -273,6 +275,12 @@ class Agent:
             if call is None:
                 call = self._extract_inline_json_tool_call(full)
             if call is None:
+                if in_tool_block:
+                    # We hid a ```tool block that turned out not to be a
+                    # usable call (malformed JSON, missing name, no closing
+                    # fence). Show it rather than silently swallowing the
+                    # rest of the reply.
+                    yield full[block_start:]
                 return
 
             self._inject_context(call)
