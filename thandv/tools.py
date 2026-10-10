@@ -6,6 +6,8 @@ model's tool-call block and dispatching here.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -115,6 +117,60 @@ def list_dir(path: str = ".") -> dict[str, Any]:
     return {"path": str(p), "entries": entries}
 
 
+def run_with_timeout(
+    args: str | list[str],
+    *,
+    timeout: float,
+    shell: bool = False,
+    cwd: str | Path | None = None,
+) -> subprocess.CompletedProcess:
+    """`subprocess.run` with a timeout that actually bounds the whole job.
+
+    Plain `subprocess.run(timeout=...)` only kills the direct child. With
+    `shell=True` (or any program that spawns helpers) the grandchildren
+    survive the timeout, keep running unattended, and can hold the output
+    pipes open so collecting output blocks. Here the child leads its own
+    process group (POSIX) and the entire group is killed on timeout.
+
+    stdin is /dev/null: the command must never read from the user's
+    terminal (an interactive `python`, `cat`, or a commit editor would
+    otherwise steal the REPL's input).
+
+    Raises `subprocess.TimeoutExpired` on timeout, like `subprocess.run`.
+    """
+    posix = os.name == "posix"
+    proc = subprocess.Popen(
+        args,
+        shell=shell,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=posix,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+
+
 _DANGEROUS = ("rm -rf", "mkfs", "dd if=", ":(){:|", "shutdown", "reboot")
 
 
@@ -123,13 +179,7 @@ def run_bash(command: str, confirm: bool = False) -> dict[str, Any]:
     if any(token in lowered for token in _DANGEROUS) and not confirm:
         return {"error": "refused: command looks destructive; ask the user to confirm"}
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=MAX_BASH_SECONDS,
-        )
+        proc = run_with_timeout(command, timeout=MAX_BASH_SECONDS, shell=True)
         return {
             "exit": proc.returncode,
             "stdout": proc.stdout[-8000:],

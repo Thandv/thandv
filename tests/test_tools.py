@@ -274,3 +274,27 @@ def test_edit_file_rejects_empty_old(tmp_path):
 def test_edit_file_on_directory(tmp_path):
     out = edit_file(str(tmp_path), "a", "b")
     assert "error" in out and "directory" in out["error"]
+
+
+def test_run_bash_does_not_read_terminal_stdin():
+    # `cat` with no args reads stdin; it must see EOF immediately rather
+    # than block on (or consume) the user's terminal.
+    out = run_bash("cat; echo done")
+    assert out["exit"] == 0
+    assert "done" in out["stdout"]
+
+
+def test_run_bash_timeout_kills_background_children(monkeypatch, tmp_path):
+    import os
+    import time
+
+    if os.name != "posix":
+        return
+    monkeypatch.setattr(tools, "MAX_BASH_SECONDS", 1)
+    marker = tmp_path / "survived"
+    t0 = time.time()
+    out = run_bash(f"(sleep 2; touch {marker}) & sleep 10")
+    assert "timeout" in out["error"]
+    assert time.time() - t0 < 5
+    time.sleep(2.5)
+    assert not marker.exists(), "background child outlived the timeout"
