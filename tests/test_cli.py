@@ -882,3 +882,65 @@ def test_finance_paper_trade_status_disabled(thandv_home, monkeypatch, capsys):
     assert "(none)" in out
     assert "NOT_FINANCIAL_ADVICE" in out
     assert "register your own" in out.lower()
+
+
+def _chat_ready(monkeypatch, turn_impl):
+    from thandv import agent as agent_mod
+    from thandv import cli
+
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+    monkeypatch.setattr(agent_mod.Agent, "turn", turn_impl)
+
+
+def test_chat_one_shot_reports_connection_error(thandv_home, monkeypatch, capsys):
+    import requests
+
+    def turn(self, prompt):
+        yield "partial "
+        raise requests.ConnectionError("connection refused")
+
+    _chat_ready(monkeypatch, turn)
+    rc = main(["chat", "--persona", "code", "hi"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "partial" in captured.out
+    assert "connection refused" in captured.err
+    assert "ollama" in captured.err.lower()
+
+
+def test_chat_repl_survives_failed_turn(thandv_home, monkeypatch, capsys):
+    calls = []
+
+    def turn(self, prompt):
+        calls.append(prompt)
+        if prompt == "first":
+            raise RuntimeError("ollama error: model runner has unexpectedly stopped")
+        yield "second reply"
+
+    _chat_ready(monkeypatch, turn)
+    inputs = iter(["first", "second", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    rc = main(["chat", "--persona", "code"])
+    assert rc == 0
+    assert calls == ["first", "second"]
+    captured = capsys.readouterr()
+    assert "unexpectedly stopped" in captured.err
+    assert "second reply" in captured.out
+
+
+def test_chat_ctrl_c_interrupts_reply_not_session(thandv_home, monkeypatch, capsys):
+    def turn(self, prompt):
+        if prompt == "long":
+            yield "start..."
+            raise KeyboardInterrupt
+        yield "ok"
+
+    _chat_ready(monkeypatch, turn)
+    inputs = iter(["long", "short", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    rc = main(["chat", "--persona", "code"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out
+    assert "ok" in out

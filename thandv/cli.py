@@ -109,10 +109,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
     print("Type your message. Ctrl-D or /exit to quit.\n")
 
     if args.prompt:
-        for chunk in agent.turn(args.prompt):
-            print(chunk, end="", flush=True)
-        print()
-        return 0
+        return 0 if _stream_turn(agent, args.prompt) else 1
 
     while True:
         try:
@@ -124,9 +121,33 @@ def cmd_chat(args: argparse.Namespace) -> int:
             continue
         if user in ("/exit", "/quit"):
             return 0
-        for chunk in agent.turn(user):
+        _stream_turn(agent, user)
+
+
+def _stream_turn(agent: Agent, prompt: str) -> bool:
+    """Print one agent turn as it streams. Returns False if it failed.
+
+    A dropped Ollama connection, an HTTP error, or an in-band model error
+    ends the turn with a one-line message instead of a traceback, so the
+    REPL (and its session history) survives. Ctrl-C interrupts the reply,
+    not the whole session.
+    """
+    try:
+        for chunk in agent.turn(prompt):
             print(chunk, end="", flush=True)
+    except KeyboardInterrupt:
+        print("\n[interrupted]")
+        return True
+    except (requests.RequestException, RuntimeError) as e:
         print()
+        print(
+            f"error talking to the model: {e}\n"
+            "Is ollama still running? (`ollama serve`)",
+            file=sys.stderr,
+        )
+        return False
+    print()
+    return True
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
