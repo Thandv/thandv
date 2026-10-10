@@ -78,7 +78,13 @@ class Agent:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                msg = obj.get("message", {})
+                if obj.get("error"):
+                    # Ollama reports failures that happen after the HTTP
+                    # 200 (model load OOM, context overflow, a crashed
+                    # runner) as an in-band {"error": ...} line. Swallowing
+                    # it would turn the failure into a silent empty reply.
+                    raise RuntimeError(f"ollama error: {obj['error']}")
+                msg = obj.get("message") or {}
                 tcs = msg.get("tool_calls")
                 if tcs:
                     self._pending_tool_calls = tcs
@@ -240,9 +246,6 @@ class Agent:
             elif not in_tool_block and pending:
                 yield pending
 
-            self.messages.append({"role": "assistant", "content": full})
-            append_event(self.session_path, {"role": "assistant", "content": full})
-
             # Prefer native tool_calls; then the explicit text protocol;
             # then inline-JSON-in-content (for smaller models that emit the
             # call as raw JSON without using the native field).
@@ -251,6 +254,20 @@ class Agent:
                 call = self._normalise_native_call(raw)
                 if call is not None:
                     break
+            native = call is not None
+
+            assistant_msg: dict = {"role": "assistant", "content": full}
+            if native:
+                # The OpenAI / Ollama contract pairs every role="tool"
+                # message with the assistant message that requested it.
+                # Without `tool_calls` here the next hop shows the model a
+                # tool result it never (visibly) asked for.
+                assistant_msg["tool_calls"] = [
+                    {"function": {"name": call["name"], "arguments": dict(call["args"])}}
+                ]
+            self.messages.append(assistant_msg)
+            append_event(self.session_path, {"role": "assistant", "content": full})
+
             if call is None:
                 call = self._extract_tool_call(full)
             if call is None:
