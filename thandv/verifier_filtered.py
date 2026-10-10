@@ -27,7 +27,6 @@ section "Verifiable-reward fine-tuning" for the underlying argument.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,12 +67,8 @@ def distill_and_filter(
     if limit is not None:
         tasks = tasks[:limit]
 
-    trainer._ensure_dirs()
     if out_path is None:
-        out_path = (
-            trainer.QUEUE_DIR
-            / f"{int(time.time())}-vfilt-{teacher.name}-{suite_name}.jsonl"
-        )
+        out_path = trainer.new_queue_path(f"vfilt-{teacher.name}-{suite_name}")
 
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     n_attempted = 0
@@ -84,7 +79,7 @@ def distill_and_filter(
     total_calls = len(tasks) * n_per_task
     call_idx = 0
 
-    with out_path.open("w") as f:
+    with trainer.queue_writer(out_path) as f:
         for task in tasks:
             attempted = 0
             kept = 0

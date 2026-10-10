@@ -491,3 +491,83 @@ def test_turn_handles_tool_block_at_very_start(thandv_home, monkeypatch):
     assert "[tool] list_dir" in out
     assert "done." in out
     assert "```tool" not in out
+
+
+def test_native_call_recorded_on_assistant_message(thandv_home, monkeypatch, tmp_path):
+    """The role=tool result must follow an assistant message carrying the
+    tool_calls that requested it (OpenAI / Ollama chat contract)."""
+    target = tmp_path / "hi.txt"
+    target.write_text("x")
+    scripts = [
+        ([{"function": {"name": "read_file", "arguments": json.dumps({"path": str(target)})}}], ""),
+        ([], "done."),
+    ]
+    agent = _agent_native(thandv_home, monkeypatch, scripts)
+    "".join(agent.turn("read it"))
+    roles = [m["role"] for m in agent.messages]
+    assert roles == ["system", "user", "assistant", "tool", "assistant"]
+    asst = agent.messages[2]
+    assert asst["tool_calls"] == [
+        {"function": {"name": "read_file", "arguments": {"path": str(target)}}}
+    ]
+    # Plain replies and text-protocol calls carry no tool_calls key.
+    assert "tool_calls" not in agent.messages[4]
+
+
+class _FakeResponse:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+
+def test_raw_stream_raises_on_in_band_ollama_error(thandv_home, monkeypatch):
+    import pytest
+
+    from thandv import agent as agent_mod
+
+    lines = [
+        json.dumps({"message": {"content": "partial"}}).encode(),
+        json.dumps({"error": "model runner has unexpectedly stopped"}).encode(),
+    ]
+    monkeypatch.setattr(agent_mod.requests, "post", lambda *a, **k: _FakeResponse(lines))
+    agent = Agent(config=Config(model="fake-model"))
+    with pytest.raises(RuntimeError, match="unexpectedly stopped"):
+        list(agent._raw_stream())
+
+
+def test_raw_stream_tolerates_null_message(thandv_home, monkeypatch):
+    from thandv import agent as agent_mod
+
+    lines = [
+        json.dumps({"message": None}).encode(),
+        json.dumps({"message": {"content": "hi"}, "done": True}).encode(),
+    ]
+    monkeypatch.setattr(agent_mod.requests, "post", lambda *a, **k: _FakeResponse(lines))
+    agent = Agent(config=Config(model="fake-model"))
+    assert list(agent._raw_stream()) == ["hi"]
+
+
+def test_turn_shows_malformed_tool_block_instead_of_swallowing(thandv_home, monkeypatch):
+    reply = "Trying a tool.\n```tool\n{not valid json}\n```\nand some trailing text"
+    agent = _agent_chunked(thandv_home, monkeypatch, [["Trying a tool.\n", reply[len("Trying a tool.\n"):]]])
+    out = "".join(agent.turn("go"))
+    assert out == reply
+    assert "[tool]" not in out
+
+
+def test_turn_shows_unterminated_tool_block(thandv_home, monkeypatch):
+    reply = "```tool\n{\"name\": \"read_file\", \"args\": {\"path\": \"x\"}}"  # no closing fence
+    agent = _agent(thandv_home, monkeypatch, [reply])
+    out = "".join(agent.turn("go"))
+    assert out == reply

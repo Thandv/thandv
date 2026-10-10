@@ -6,6 +6,8 @@ model's tool-call block and dispatching here.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -27,17 +29,47 @@ def read_file(path: str) -> dict[str, Any]:
         return {"error": f"not found: {p}"}
     if p.is_dir():
         return {"error": f"is a directory: {p}"}
-    data = p.read_bytes()[:MAX_READ_BYTES]
+    with p.open("rb") as f:
+        # Read one byte past the cap so we know whether we truncated
+        # without loading arbitrarily large files into memory.
+        data = f.read(MAX_READ_BYTES + 1)
+    truncated = len(data) > MAX_READ_BYTES
+    data = data[:MAX_READ_BYTES]
     try:
-        return {"path": str(p), "content": data.decode("utf-8")}
+        content = _decode_utf8_prefix(data, truncated)
     except UnicodeDecodeError:
         return {"path": str(p), "content": f"<binary, {len(data)} bytes>"}
+    out: dict[str, Any] = {"path": str(p), "content": content}
+    if truncated:
+        out["truncated"] = True
+    return out
+
+
+def _decode_utf8_prefix(data: bytes, truncated: bool) -> str:
+    """Decode `data` as UTF-8, tolerating a multi-byte character split by
+    the truncation cap.
+
+    A UTF-8 character is at most 4 bytes, so when the cap cut the file we
+    retry without up to 3 trailing bytes before concluding the file is
+    binary. Untruncated input must decode cleanly.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        if not truncated:
+            raise
+        for cut in range(1, 4):
+            try:
+                return data[:-cut].decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        raise
 
 
 def write_file(path: str, content: str) -> dict[str, Any]:
     p = _resolve(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    p.write_text(content, encoding="utf-8")
     return {"path": str(p), "bytes": len(content.encode("utf-8"))}
 
 
@@ -45,13 +77,32 @@ def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
     p = _resolve(path)
     if not p.exists():
         return {"error": f"not found: {p}"}
-    text = p.read_text()
+    if p.is_dir():
+        return {"error": f"is a directory: {p}"}
+    if not old:
+        return {"error": "old string must be non-empty; use write_file to create or overwrite"}
+    # newline="" disables universal-newline translation in both directions,
+    # so a CRLF file stays CRLF after the edit instead of being silently
+    # rewritten with LF endings on every line.
+    with p.open(encoding="utf-8", newline="") as f:
+        text = f.read()
+    if old not in text and "\r\n" in text:
+        # The model almost always sends LF-only snippets. Match them
+        # against a CRLF file by converting the snippet's endings.
+        old_crlf = _to_crlf(old)
+        if old_crlf in text:
+            old, new = old_crlf, _to_crlf(new)
     if old not in text:
         return {"error": "old string not found"}
     if text.count(old) > 1:
         return {"error": "old string is not unique; include more context"}
-    p.write_text(text.replace(old, new, 1))
+    with p.open("w", encoding="utf-8", newline="") as f:
+        f.write(text.replace(old, new, 1))
     return {"path": str(p), "ok": True}
+
+
+def _to_crlf(s: str) -> str:
+    return s.replace("\r\n", "\n").replace("\n", "\r\n")
 
 
 def list_dir(path: str = ".") -> dict[str, Any]:
@@ -66,6 +117,60 @@ def list_dir(path: str = ".") -> dict[str, Any]:
     return {"path": str(p), "entries": entries}
 
 
+def run_with_timeout(
+    args: str | list[str],
+    *,
+    timeout: float,
+    shell: bool = False,
+    cwd: str | Path | None = None,
+) -> subprocess.CompletedProcess:
+    """`subprocess.run` with a timeout that actually bounds the whole job.
+
+    Plain `subprocess.run(timeout=...)` only kills the direct child. With
+    `shell=True` (or any program that spawns helpers) the grandchildren
+    survive the timeout, keep running unattended, and can hold the output
+    pipes open so collecting output blocks. Here the child leads its own
+    process group (POSIX) and the entire group is killed on timeout.
+
+    stdin is /dev/null: the command must never read from the user's
+    terminal (an interactive `python`, `cat`, or a commit editor would
+    otherwise steal the REPL's input).
+
+    Raises `subprocess.TimeoutExpired` on timeout, like `subprocess.run`.
+    """
+    posix = os.name == "posix"
+    proc = subprocess.Popen(
+        args,
+        shell=shell,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=posix,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+
+
 _DANGEROUS = ("rm -rf", "mkfs", "dd if=", ":(){:|", "shutdown", "reboot")
 
 
@@ -74,13 +179,7 @@ def run_bash(command: str, confirm: bool = False) -> dict[str, Any]:
     if any(token in lowered for token in _DANGEROUS) and not confirm:
         return {"error": "refused: command looks destructive; ask the user to confirm"}
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=MAX_BASH_SECONDS,
-        )
+        proc = run_with_timeout(command, timeout=MAX_BASH_SECONDS, shell=True)
         return {
             "exit": proc.returncode,
             "stdout": proc.stdout[-8000:],
@@ -126,7 +225,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 file from disk. Content is truncated to 200 KB.",
+            "description": (
+                "Read a UTF-8 file from disk. Content is truncated to 200 KB; "
+                "the result carries `truncated: true` when that happens."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

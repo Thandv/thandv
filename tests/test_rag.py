@@ -228,3 +228,63 @@ def test_clear_corpus(thandv_home, fake_embed):
     assert clear_corpus("code") is True
     assert not corpus_path("code").exists()
     assert clear_corpus("code") is False  # already gone
+
+
+# --- Chunking edge cases ----------------------------------------------------
+
+def test_chunk_text_respects_max_chars_with_overlap():
+    paras = ["p%d " % i + "w" * 900 for i in range(4)]
+    out = list(chunk_text("\n\n".join(paras), max_chars=1000, overlap=200))
+    assert len(out) > 1
+    assert all(len(c) <= 1000 for c in out), [len(c) for c in out]
+
+
+def test_chunk_text_overlap_not_smaller_than_max_does_not_crash():
+    big = "y" * 500
+    # overlap == max_chars made range() step 0 (ValueError); overlap >
+    # max_chars made the step negative and silently dropped the paragraph.
+    for overlap in (100, 150):
+        out = list(chunk_text(big, max_chars=100, overlap=overlap))
+        assert out and "".join(out).count("y") >= 500
+        assert all(len(c) <= 100 for c in out)
+
+
+def test_chunk_text_hard_split_has_no_redundant_tail_piece():
+    big = "z" * 2200
+    out = list(chunk_text(big, max_chars=1200, overlap=200))
+    # [0:1200], [1000:2200] covers everything; a third [2000:2200] piece
+    # would be a strict subset of the second.
+    assert len(out) == 2
+
+
+# --- Ingest walking -----------------------------------------------------------
+
+def test_ingest_path_skips_hidden_and_vendored_dirs(thandv_home, fake_embed, tmp_path):
+    root = tmp_path / "proj"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("print('mine')")
+    (root / "README.MD").write_text("# readme")
+    for junk in (".venv/lib", ".git", "node_modules/pkg", "src/__pycache__"):
+        (root / junk).mkdir(parents=True)
+        (root / junk / "vendored.py").write_text("print('not mine')")
+    files, _ = ingest_path(root, persona="code")
+    sources = {c.source for c in load_chunks("code")}
+    assert files == 2
+    assert sources == {str(root / "src" / "app.py"), str(root / "README.MD")}
+
+
+def test_ingest_path_root_may_itself_be_hidden(thandv_home, fake_embed, tmp_path):
+    root = tmp_path / ".notes"
+    root.mkdir()
+    (root / "n.md").write_text("note")
+    assert ingest_path(root, persona="code")[0] == 1
+
+
+def test_load_chunks_skips_truncated_line(thandv_home, fake_embed):
+    ingest_text("first", source="a", persona="code")
+    path = corpus_path("code")
+    with path.open("a") as f:
+        f.write('{"text": "half-writ')  # interrupted ingest
+    chunks = load_chunks("code")
+    assert [c.text for c in chunks] == ["first"]
+    assert retrieve("first", persona="code", k=1)[0]["text"] == "first"

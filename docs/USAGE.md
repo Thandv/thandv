@@ -126,7 +126,7 @@ Available suites:
 | `finance`   | 6     | (none)   | Hand-coded finance-discipline tasks. 3 *refusal* tasks (stock-pick, market-prediction, alpha-claim) and 3 *allowed-activity* tasks (concept naming, disclaimer compliance, resume bullets). Markers drawn from observed `qwen2.5-coder:7b` refusal language. |
 | `humaneval` | 164   | `thandv[eval]` (pulls `datasets`) | OpenAI HumanEval. Each completion is exec'd alongside the dataset's unit tests in a subprocess with a 10 s timeout. First run downloads ~300 KB to `~/.thandv/datasets/humaneval/`. |
 | `mbpp`      | 257   | `thandv[eval]` (pulls `datasets`) | MBPP `sanitized` test split. Each completion is exec'd alongside the dataset's `test_list` assertions in a subprocess with a 10 s timeout. First run downloads to `~/.thandv/datasets/mbpp/`. Full run is slow (~2 h on M2 7B); use `--limit` for sanity checks. The prompt includes the first test as an example, because MBPP's natural-language description doesn't carry the expected function name. |
-| `swe-lite`  | 3     | (none)   | Hand-crafted "fix the bug" tasks. Each ships a broken `solution.py` plus a `unittest` module that catches the bug. The model gets both and must return the full corrected source; the verifier writes both to a temp dir and runs `python test_solution.py`. Scaffold for a future real-SWE-Bench integration. Stdlib only; no extra deps. |
+| `swe-lite`  | 3     | (none)   | Hand-crafted "fix the bug" tasks. Each ships a broken `solution.py` plus a `unittest` module that catches the bug. The model gets both and must return the full corrected source; the verifier writes both to a temp dir and runs the test module's `unittest` suite. Scaffold for a future real-SWE-Bench integration. Stdlib only; no extra deps. |
 
 ```bash
 thandv eval                              # smoke, 3 tasks
@@ -148,17 +148,26 @@ they're stable):
 | `qwen2.5-coder:7b`   | `mbpp` (full 257)      | **206/257 (80.2%)** after the prompt fix — tracks the published pass@1 for this model. (Pre-fix run scored 7.4% because the prompt didn't carry the expected function name.) | M2 16 GB |
 | `qwen2.5-coder:7b`   | `swe-lite`             | **3/3 (100%)** — the scaffold tasks are easy on purpose; real signal lands when we integrate the actual SWE-Bench dataset | M2 16 GB |
 
-**Sandbox honesty.** The HumanEval verifier runs model-generated Python in
-a subprocess with a 10 s timeout. That's enough for research; do *not*
-run `thandv eval humaneval` against an untrusted model or in a shared
-environment. The model can write whatever Python it wants.
+**Sandbox honesty.** The code-executing verifiers (`smoke`'s `is-prime`,
+`humaneval`, `mbpp`, `swe-lite`) run model-generated Python in a
+subprocess with a timeout, inside a fresh temporary directory, with stdin
+closed and the whole process group killed on timeout. A pass requires a
+per-run random token printed *after* the tests finish, so a completion
+that just calls `sys.exit(0)` scores as a fail. That's enough for
+research; it is not isolation — there is no filesystem or network
+jail. Do *not* run these suites against an untrusted model or in a
+shared environment. The model can write whatever Python it wants.
 
 ### `thandv ingest [PATH] [--persona NAME] [--stats] [--clear]`
 
 Ingest a file or directory into a persona's local corpus. Used by the
 `retrieve` tool inside agent sessions to look up relevant chunks before
 answering. Supported file extensions: `.md`, `.markdown`, `.txt`, `.rst`,
-`.py`, `.pyi`. Directories are walked recursively.
+`.py`, `.pyi` (case-insensitive). Directories are walked recursively,
+skipping hidden entries (`.git/`, `.venv/`, dotfiles, ...) and
+`node_modules/`, `__pycache__/`, `site-packages/`, `venv/`,
+`build/`, `dist/`, so `thandv ingest .` in a checkout embeds your code
+rather than your dependencies.
 
 ```bash
 thandv ingest README.md                            # default persona "all"
