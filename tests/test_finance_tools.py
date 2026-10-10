@@ -316,3 +316,40 @@ def test_read_signals_csv_rejects_out_of_range(tmp_path):
     p.write_text("signal\n1\n2\n")
     with pytest.raises(ValueError, match="row 3"):
         ft.read_signals_csv(p)
+
+
+def test_returns_from_prices_rejects_non_positive_last_price():
+    with pytest.raises(ValueError, match="non-positive price"):
+        ft.returns_from_prices([100.0, 50.0, 0.0])
+    with pytest.raises(ValueError, match="non-positive price"):
+        ft.returns_from_prices([100.0, -5.0])
+
+
+def test_returns_from_prices_rejects_nan():
+    with pytest.raises(ValueError, match="non-finite"):
+        ft.returns_from_prices([100.0, float("nan"), 101.0])
+
+
+@pytest.mark.parametrize("bad", [0.5, 1.7, -0.9, 2, float("nan"), float("inf")])
+def test_backtest_rejects_non_integer_signals(bad):
+    with pytest.raises(ValueError, match="signal must be"):
+        ft.backtest([100.0, 101.0, 102.0], [1, bad, 0])
+
+
+def test_backtest_accepts_integral_floats():
+    r = ft.backtest([100.0, 110.0, 121.0], [1.0, -0.0, 0.0])
+    assert r["total_return"] == pytest.approx(0.10)
+
+
+def test_read_signals_csv_rejects_fractional(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("signal\n1\n0.5\n")
+    with pytest.raises(ValueError, match="row 3"):
+        ft.read_signals_csv(p)
+
+
+def test_read_prices_csv_rejects_non_finite(tmp_path):
+    p = tmp_path / "p.csv"
+    p.write_text("price\n100\nnan\n")
+    with pytest.raises(ValueError, match="row 3"):
+        ft.read_prices_csv(p)
