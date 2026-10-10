@@ -944,3 +944,32 @@ def test_chat_ctrl_c_interrupts_reply_not_session(thandv_home, monkeypatch, caps
     out = capsys.readouterr().out
     assert "[interrupted]" in out
     assert "ok" in out
+
+
+@pytest.mark.parametrize(
+    "kv",
+    [
+        "temperature=hot",
+        "max_tokens=lots",
+        "temperature=nan",
+        "auto_tools=ture",
+        "finance_paper_trading_enabled=maybe",
+        "persona=no-such-persona",
+    ],
+)
+def test_config_set_rejects_bad_values_without_saving(thandv_home, capsys, kv):
+    from thandv import config
+
+    rc = main(["config", "--set", kv])
+    assert rc == 2
+    assert "bad value" in capsys.readouterr().err
+    assert not config.CONFIG_PATH.exists()
+
+
+def test_config_set_bool_spellings(thandv_home, capsys):
+    from thandv.config import Config
+
+    assert main(["config", "--set", "auto_tools=off"]) == 0
+    assert Config.load().auto_tools is False
+    assert main(["config", "--set", "auto_tools=YES"]) == 0
+    assert Config.load().auto_tools is True

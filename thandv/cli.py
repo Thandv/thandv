@@ -812,6 +812,40 @@ def cmd_finance(args: argparse.Namespace) -> int:
     return 2
 
 
+_TRUE_STRINGS = ("1", "true", "yes", "on")
+_FALSE_STRINGS = ("0", "false", "no", "off")
+
+
+def _parse_config_value(key: str, current: object, raw: str) -> object:
+    """Coerce a `--set key=value` string to the key's type, or raise
+    ValueError. Typos must not be saved silently: `true` misspelled as
+    `ture` used to persist False, which for an opt-in gate is the
+    opposite of what the user asked for."""
+    if isinstance(current, bool):
+        lowered = raw.strip().lower()
+        if lowered in _TRUE_STRINGS:
+            return True
+        if lowered in _FALSE_STRINGS:
+            return False
+        raise ValueError(f"expected a boolean (true/false), got {raw!r}")
+    if isinstance(current, int):
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"expected an integer, got {raw!r}") from None
+    if isinstance(current, float):
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(f"expected a number, got {raw!r}") from None
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError(f"expected a finite number, got {raw!r}")
+        return value
+    if key == "persona":
+        get_persona(raw)  # raises ValueError listing the known personas
+    return raw
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -823,14 +857,12 @@ def cmd_config(args: argparse.Namespace) -> int:
             if not hasattr(cfg, k):
                 print(f"unknown key: {k}", file=sys.stderr)
                 return 2
-            current = getattr(cfg, k)
-            if isinstance(current, bool):
-                v = v.lower() in ("1", "true", "yes")
-            elif isinstance(current, int):
-                v = int(v)
-            elif isinstance(current, float):
-                v = float(v)
-            setattr(cfg, k, v)
+            try:
+                value = _parse_config_value(k, getattr(cfg, k), v)
+            except ValueError as e:
+                print(f"bad value for {k}: {e}", file=sys.stderr)
+                return 2
+            setattr(cfg, k, value)
         cfg.save()
     for k in cfg.__dataclass_fields__:
         print(f"{k}={getattr(cfg, k)}")
