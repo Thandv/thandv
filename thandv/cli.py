@@ -6,9 +6,12 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import sys
 import unicodedata
+from contextlib import closing, contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import requests
 
@@ -153,9 +156,11 @@ def _repl_approver(name: str, summary: str) -> bool:
     choices = "[y/N/f]" if long else "[y/N]"
     while True:
         _flush_typeahead(sys.stdin)
+        # Ctrl-C is not caught here: it propagates out of the turn, which
+        # records the call as not run and ends the reply (see _stream_turn).
         try:
             answer = input(f"Allow {name}? {choices} ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print()
             return False
         if long and answer == "f":
@@ -226,7 +231,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
     print("Type your message. Ctrl-D or /exit to quit.\n")
 
     if args.prompt:
-        return 0 if _stream_turn(agent, args.prompt) else 1
+        return _stream_turn(agent, args.prompt)
 
     while True:
         try:
@@ -241,33 +246,71 @@ def cmd_chat(args: argparse.Namespace) -> int:
         _stream_turn(agent, user)
 
 
-def _stream_turn(agent: Agent, prompt: str) -> bool:
-    """Print one agent turn as it streams. Returns False if it failed.
+EXIT_INTERRUPTED = 130  # 128 + SIGINT, as a shell reports Ctrl-C
+
+
+@contextmanager
+def _first_ctrl_c_only() -> Iterator[None]:
+    """Let the first Ctrl-C raise KeyboardInterrupt and ignore any more until
+    the block exits, so a second Ctrl-C cannot cut short the cleanup of the
+    first (closing the model stream, recording the session log).
+
+    Only replaces Python's default handler, and only in the main thread: an
+    ignored SIGINT (a background job) stays ignored.
+    """
+    fired = False
+
+    def on_sigint(signum, frame) -> None:
+        nonlocal fired
+        if not fired:
+            fired = True
+            raise KeyboardInterrupt
+
+    if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+        yield
+        return
+    try:
+        previous = signal.signal(signal.SIGINT, on_sigint)
+    except ValueError:  # not the main thread
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _stream_turn(agent: Agent, prompt: str) -> int:
+    """Print one agent turn as it streams. Returns an exit status: 0 when the
+    reply finished, 1 when it failed, EXIT_INTERRUPTED after Ctrl-C.
 
     A dropped Ollama connection, an HTTP error, or an in-band model error
     ends the turn with a one-line message instead of a traceback, so the
-    REPL (and its session history) survives. Ctrl-C interrupts the reply,
-    not the whole session.
+    REPL (and its session history) survives. Ctrl-C, while streaming or at
+    the approval prompt, ends the reply, not the session: the turn is closed
+    so it records what was cut off and any tool call as not run.
     """
-    try:
-        for chunk in agent.turn(prompt):
-            # Model text is untrusted: escape control characters so it can't
-            # hide or forge the approval prompt (SGR conceal, cursor moves,
-            # alternate screen, OSC clipboard writes).
-            print(_for_terminal(printable(chunk)), end="", flush=True)
-    except KeyboardInterrupt:
-        print("\n[interrupted]")
-        return True
-    except (requests.RequestException, RuntimeError) as e:
-        print()
-        print(
-            f"error talking to the model: {e}\n"
-            "Is ollama still running? (`ollama serve`)",
-            file=sys.stderr,
-        )
-        return False
-    print()
-    return True
+    with _first_ctrl_c_only():
+        try:
+            with closing(agent.turn(prompt)) as chunks:
+                for chunk in chunks:
+                    # Model text is untrusted: escape control characters so it
+                    # can't hide or forge the approval prompt (SGR conceal,
+                    # cursor moves, alternate screen, OSC clipboard writes).
+                    print(_for_terminal(printable(chunk)), end="", flush=True)
+            print()
+        except KeyboardInterrupt:
+            print("\n[interrupted]", flush=True)
+            return EXIT_INTERRUPTED
+        except (requests.RequestException, RuntimeError) as e:
+            print()
+            print(
+                f"error talking to the model: {e}\n"
+                "Is ollama still running? (`ollama serve`)",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:

@@ -298,3 +298,30 @@ def test_run_bash_timeout_kills_background_children(monkeypatch, tmp_path):
     assert time.time() - t0 < 5
     time.sleep(2.5)
     assert not marker.exists(), "background child outlived the timeout"
+
+
+def test_run_with_timeout_kills_the_whole_group_on_ctrl_c(monkeypatch):
+    """The command leads its own session, so the terminal's Ctrl-C never
+    reaches it or its helpers; an interrupt must kill the whole group."""
+    import signal
+    import subprocess
+
+    killed = []
+
+    class FakeProc:
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            raise KeyboardInterrupt
+
+        def kill(self):
+            killed.append("kill")
+
+        def wait(self, timeout=None):
+            return -9
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(tools.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    with pytest.raises(KeyboardInterrupt):
+        tools.run_with_timeout("sleep 100", timeout=5, shell=True)
+    assert (4242, signal.SIGKILL) in killed

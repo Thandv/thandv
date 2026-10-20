@@ -264,22 +264,28 @@ def run_with_timeout(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        if posix:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        proc.kill()
+        _kill_group(proc, posix)
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             pass
         raise
     except BaseException:
-        proc.kill()
+        # Ctrl-C: the job leads its own session, so the terminal's SIGINT
+        # never reached it or its helpers. Kill the group here.
+        _kill_group(proc, posix)
         proc.wait()
         raise
     return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+
+
+def _kill_group(proc: subprocess.Popen, posix: bool) -> None:
+    if posix:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
 
 
 # Second layer only. This substring denylist is NOT a security boundary:
