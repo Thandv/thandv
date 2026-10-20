@@ -722,3 +722,21 @@ def test_unreadable_target_is_refused_not_raised(thandv_home, monkeypatch, tmp_p
         locked.chmod(0o600)
     assert "error" in _tool_results(agent)[0]
     assert asked == [] and locked.read_text() == "x"
+
+
+def test_approval_and_stream_survive_non_utf8_terminal(thandv_home, monkeypatch, tmp_path):
+    """Under a latin-1 or ASCII locale a printable non-ASCII character must
+    be escaped, not raise (which crashed the turn or silently denied)."""
+    import io
+
+    from thandv import cli
+
+    for enc in ("latin-1", "ascii"):
+        buf = io.BytesIO()
+        monkeypatch.setattr("sys.stdout", io.TextIOWrapper(buf, encoding=enc, errors="strict"))
+        _ask_once(monkeypatch, answer="y")
+        assert cli._repl_approver("write_file", "write_file (new file):\n/r/caf\u00e9\u2192.py") is True
+        agent = _agent(monkeypatch, tmp_path, ["arrow \u2192 done"], approve=None)
+        assert cli._stream_turn(agent, "x") is True
+        sys_out = buf.getvalue()
+        assert b"\\u2192" in sys_out

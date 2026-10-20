@@ -109,6 +109,17 @@ def _approval_preview(summary: str, cols: int) -> tuple[list[str], int]:
     return shown, 0
 
 
+def _for_terminal(text: str) -> str:
+    """Escape what the terminal's encoding cannot show (a latin-1 or ASCII
+    locale), so printing never raises: a raise ended the turn, or made the
+    approver deny before the question was even shown."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(enc, "backslashreplace").decode(enc)
+    except LookupError:
+        return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
 def _flush_typeahead(stream) -> None:
     """Drop anything typed (or pasted) before the approval question appeared,
     so a queued line cannot answer it."""
@@ -132,7 +143,7 @@ def _repl_approver(name: str, summary: str) -> bool:
     long = hidden > 0
     # Reset terminal attributes first, as a second layer behind escaping
     # model output in _stream_turn.
-    print("\x1b[0m\n" + "\n".join(shown), flush=True)
+    print("\x1b[0m\n" + _for_terminal("\n".join(shown)), flush=True)
     if long:
         print(f"... {hidden} more lines not shown (or not in full); answer f to see all",
               flush=True)
@@ -148,14 +159,14 @@ def _repl_approver(name: str, summary: str) -> bool:
             print()
             return False
         if long and answer == "f":
-            print(summary, flush=True)
+            print(_for_terminal(summary), flush=True)
             continue
         return answer in ("y", "yes")
 
 
 def _approve_all(name: str, summary: str) -> bool:
     """Used only when the person passed --allow-tools on the command line."""
-    print(f"\n[auto-approved by --allow-tools] {summary}", flush=True)
+    print(_for_terminal(f"\n[auto-approved by --allow-tools] {summary}"), flush=True)
     return True
 
 
@@ -243,7 +254,7 @@ def _stream_turn(agent: Agent, prompt: str) -> bool:
             # Model text is untrusted: escape control characters so it can't
             # hide or forge the approval prompt (SGR conceal, cursor moves,
             # alternate screen, OSC clipboard writes).
-            print(printable(chunk), end="", flush=True)
+            print(_for_terminal(printable(chunk)), end="", flush=True)
     except KeyboardInterrupt:
         print("\n[interrupted]")
         return True
