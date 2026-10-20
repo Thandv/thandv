@@ -78,9 +78,14 @@ Interactive REPL with the active persona's system prompt + skills. With a
 positional `PROMPT`, runs one turn and exits.
 
 **Tool approval.** Before the model runs `run_bash`, `write_file` or
-`edit_file`, the REPL shows the full command (or the file path and a diff
-summary) and asks `Allow <tool>? [y/N]`. Only a typed `y`/`yes` runs it;
-anything else tells the model `denied by user`. `read_file`, `list_dir`
+`edit_file`, the REPL shows the full command (or the file path and the
+diff) and asks `Allow <tool>? [y/N]`. Only a typed `y`/`yes` runs it;
+anything else tells the model `denied by user`. A summary longer than 60
+lines is cut, and the prompt becomes `[y/N/f]`: `f` prints all of it.
+Commands over 4000 characters or 40 lines, and changes over 2000 diff
+lines, are refused before you are asked. Writes to files that make code
+run later (git hooks, `conftest.py`, `Makefile`, executables, ...) carry
+a WARNING line. `read_file`, `list_dir`
 and `retrieve` run without asking. If stdin is not a terminal, every
 request is denied. Writes are confined to the directory you started
 `thandv` in; paths outside it (via `..`, an absolute path, `~` or a

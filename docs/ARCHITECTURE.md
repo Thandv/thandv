@@ -153,8 +153,15 @@ whether a side effect happens.
 - **Gated tools.** `run_bash`, `write_file` and `edit_file`
   (`tools.GATED_TOOLS`) go through `Agent._gate` before dispatch. The
   person sees the full command (with control characters such as ANSI
-  escapes, `\r` and bidi overrides escaped) or the resolved path plus a
-  diff summary, and must type `y`/`yes`. Anything else — Enter, `n`,
+  escapes, `\r` and bidi overrides escaped) or the resolved path plus the
+  full diff, and must type `y`/`yes`. Commands over 4000 characters or 40
+  lines and changes over 2000 diff lines are refused rather than shown in
+  part; the REPL prints the first 60 lines of a longer summary and an `f`
+  answer prints all of it. Files that make code run later (`.git/`
+  hooks, `conftest.py`, `Makefile`, shell start-up files, executables,
+  ...) get a WARNING line. Model output itself is printed with control
+  characters escaped, and the prompt resets terminal attributes, so a
+  reply cannot conceal or forge the real prompt. Anything else — Enter, `n`,
   EOF, Ctrl-C, an approver that raises — returns
   `{"error": "denied by user"}` to the model. `read_file`, `list_dir` and
   `retrieve` are ungated (`tools.UNGATED_TOOLS`); an import-time tripwire
@@ -175,10 +182,14 @@ whether a side effect happens.
   (relative paths from the session root; `~`, `..` and symlinks —
   including a symlinked parent directory — resolved first) and refuse it
   unless it is inside the session's working-directory root (the cwd when
-  the session started; `run_bash` also runs there). The file is opened
-  with `O_NOFOLLOW` and must be a regular file with one hard link. This
-  does not defend against another local process swapping a parent
-  directory for a symlink between the check and the write.
+  the session started; `run_bash` also runs there). Paths ending in `/`
+  are refused. The file is opened without following symlinks
+  (`O_NOFOLLOW_ANY` on macOS, so no component may be a symlink;
+  `O_NOFOLLOW` plus a re-check of the resolved path elsewhere) and must
+  be a regular file with one hard link; it is only truncated after those
+  checks. Missing parent directories are created before the open, so a
+  concurrent local process that swaps a directory for a symlink at that
+  moment can still make empty directories outside the root.
 - **Second layer only.** `run_bash` still refuses commands containing
   `rm -rf`, `mkfs`, `dd if=`, `:(){:|`, `shutdown`, `reboot`, with no
   override. That substring list is trivially bypassed and is not a
@@ -187,7 +198,10 @@ whether a side effect happens.
   timeout.
 
 `read_file` can read anything the user can, and an approved `run_bash`
-runs with the user's full privileges: this is not a sandbox. Don't run
+runs with the user's full privileges: this is not a sandbox. The eval
+verifiers are a separate path: they run model-written Python to grade it
+(including from the training daemon) without asking, contained only by a
+temporary directory — see "Sandbox honesty" in USAGE.md. Don't run
 Thandv as root, don't expose its HTTP surface, don't trust untrusted
 skill markdown.
 
