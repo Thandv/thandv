@@ -539,9 +539,10 @@ _AUTORUN_NAMES = frozenset({
     "gnumakefile", "justfile", ".envrc", ".bashrc", ".bash_profile", ".zshrc",
     ".zshenv", ".zprofile", ".profile", "package.json", "pyproject.toml",
     "tasks.json", "launch.json", ".pre-commit-config.yaml", "sitecustomize.py",
-    "usercustomize.py",
+    "usercustomize.py", ".mcp.json", "build.rs",
 })
-_AUTORUN_DIRS = frozenset({".git", ".github", ".vscode", ".idea", ".husky"})
+# .claude/.cursor hold agent hooks and MCP server commands.
+_AUTORUN_DIRS = frozenset({".git", ".github", ".vscode", ".idea", ".husky", ".claude", ".cursor"})
 
 
 def _diff_summary(path: Path, root: Path, before: str, after: str) -> str:

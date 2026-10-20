@@ -740,3 +740,9 @@ def test_approval_and_stream_survive_non_utf8_terminal(thandv_home, monkeypatch,
         assert cli._stream_turn(agent, "x") is True
         sys_out = buf.getvalue()
         assert b"\\u2192" in sys_out
+
+
+@pytest.mark.parametrize("path", [".claude/settings.json", ".mcp.json", ".cursor/mcp.json", "build.rs"])
+def test_autorun_warning_covers_agent_and_build_hooks(tmp_path, path):
+    s = tools.describe("write_file", {"path": path, "content": "x"}, tmp_path)["summary"]
+    assert "WARNING" in s
