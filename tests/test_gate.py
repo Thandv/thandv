@@ -701,3 +701,24 @@ def test_repl_approver_cuts_by_screen_rows_not_lines(monkeypatch, capsys, summar
     out = capsys.readouterr().out
     assert len(out) < (cli.APPROVAL_PREVIEW_LINES + 5) * 80
     assert "more lines not shown" in out and "[y/N/f]" in prompts[0]
+
+
+def test_unreadable_target_is_refused_not_raised(thandv_home, monkeypatch, tmp_path, spawned):
+    """A target the preview cannot read must be refused, not crash the REPL."""
+    if os.geteuid() == 0:
+        pytest.skip("root can read mode-000 files")
+    locked = tmp_path / "locked.txt"
+    locked.write_text("x")
+    locked.chmod(0)
+    asked = []
+    try:
+        agent = _agent(
+            monkeypatch, tmp_path,
+            [_tool_block("write_file", {"path": "locked.txt", "content": "y"}), "ok"],
+            approve=lambda n, s: asked.append(n) or True,
+        )
+        list(agent.turn("x"))
+    finally:
+        locked.chmod(0o600)
+    assert "error" in _tool_results(agent)[0]
+    assert asked == [] and locked.read_text() == "x"

@@ -614,6 +614,10 @@ def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
             return {"summary": "edit_file:\n" + _diff_summary(p, root, before, after)}
     except Refused as e:
         return {"error": str(e)}
+    except OSError as e:
+        # An unreadable target (permissions, a vanished file) is refused
+        # here; raising would end the turn and crash the REPL.
+        return {"error": f"refused: cannot preview {name}: {e.strerror or e}"}
     return {"error": f"{name} is not a gated tool"}
 
 
