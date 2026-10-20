@@ -30,7 +30,12 @@ from thandv import rag
 MAX_READ_BYTES = 200_000
 MAX_BASH_SECONDS = 30
 MAX_RETRIEVE_K = 20
-MAX_PREVIEW_DIFF_LINES = 60
+# Commands longer than this are refused: the person must be able to read
+# the whole thing in the approval prompt.
+MAX_COMMAND_CHARS = 4000
+MAX_COMMAND_LINES = 40
+# Larger file changes are refused rather than approved half-read.
+MAX_PREVIEW_DIFF_LINES = 2000
 
 # Tools that run without asking the person. Everything else in TOOLS has a
 # side effect and must pass the approval gate in the agent loop.
@@ -52,20 +57,33 @@ def confine(path: str, root: Path) -> Path:
     a link inside the root that points out of it is refused."""
     if not isinstance(path, str) or not path:
         raise Refused("path must be a non-empty string")
-    root = Path(root).resolve()
-    p = Path(path).expanduser()
-    if not p.is_absolute():
-        p = root / p
-    resolved = p.resolve()
+    if path.endswith(("/", os.sep)):
+        raise Refused(f"refused: {path!r} names a directory, not a file")
+    try:
+        root = Path(root).resolve()
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = root / p
+        resolved = p.resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        raise Refused(f"refused: bad path {path!r}: {e}") from e
     if not resolved.is_relative_to(root):
         raise Refused(f"refused: {resolved} is outside the working directory {root}")
     return resolved
 
 
-def _open_regular(p: Path, flags: int) -> int:
-    """Open `p` without following a final symlink and require a regular file
-    with a single link (a hard link could alias a file outside the root)."""
-    flags |= os.O_NOFOLLOW | os.O_NONBLOCK
+def _open_regular(p: Path, flags: int, root: Path) -> int:
+    """Open the confined path `p` without following symlinks and require a
+    regular file with a single link (a hard link could alias a file outside
+    the root). Never truncates: callers do that after these checks pass.
+
+    Where the OS has O_NOFOLLOW_ANY (macOS) no path component may be a
+    symlink. Elsewhere only the last component is checked by the open, so
+    the path is re-confined afterwards and must still name the opened file;
+    a parent swapped for a symlink in between is refused before any write.
+    """
+    # O_NOFOLLOW_ANY implies O_NOFOLLOW; macOS rejects the two together.
+    flags |= os.O_NONBLOCK | (getattr(os, "O_NOFOLLOW_ANY", 0) or os.O_NOFOLLOW)
     try:
         fd = os.open(p, flags, 0o666)
     except OSError as e:
@@ -76,6 +94,8 @@ def _open_regular(p: Path, flags: int) -> int:
             raise Refused(f"refused: {p} is not a regular file")
         if st.st_nlink > 1:
             raise Refused(f"refused: {p} has more than one hard link")
+        if confine(str(p), root) != p or not os.path.samestat(st, os.stat(p)):
+            raise Refused(f"refused: {p} changed while it was being opened")
     except BaseException:
         os.close(fd)
         raise
@@ -131,7 +151,7 @@ def write_file(path: str, content: str, *, root: Path) -> dict[str, Any]:
         p.parent.mkdir(parents=True, exist_ok=True)
         # Re-check after mkdir: the parent chain now exists and resolves.
         p = confine(str(p), root)
-        fd = _open_regular(p, os.O_WRONLY | os.O_CREAT)
+        fd = _open_regular(p, os.O_WRONLY | os.O_CREAT, root)
     except Refused as e:
         return {"error": str(e)}
     data = content.encode("utf-8")
@@ -166,7 +186,7 @@ def edit_file(path: str, old: str, new: str, *, root: Path) -> dict[str, Any]:
             return {"error": f"not found: {p}"}
         if p.is_dir():
             return {"error": f"is a directory: {p}"}
-        fd = _open_regular(p, os.O_RDWR)
+        fd = _open_regular(p, os.O_RDWR, root)
     except Refused as e:
         return {"error": str(e)}
     # newline="" disables universal-newline translation in both directions,
@@ -263,8 +283,9 @@ _DANGEROUS = ("rm -rf", "mkfs", "dd if=", ":(){:|", "shutdown", "reboot")
 
 
 def run_bash(command: str, *, root: Path) -> dict[str, Any]:
-    if not isinstance(command, str) or not command.strip():
-        return {"error": "command must be a non-empty string"}
+    err = _check_command(command)
+    if err:
+        return {"error": err}
     lowered = command.lower()
     if any(token in lowered for token in _DANGEROUS):
         return {
@@ -486,18 +507,47 @@ def printable(text: str) -> str:
     return "".join(out)
 
 
-def _diff_summary(path: Path, before: str, after: str) -> str:
+def _check_command(command: Any) -> str | None:
+    if not isinstance(command, str) or not command.strip():
+        return "command must be a non-empty string"
+    if len(command) > MAX_COMMAND_CHARS or command.count("\n") >= MAX_COMMAND_LINES:
+        return (
+            f"refused: command is longer than {MAX_COMMAND_CHARS} characters or "
+            f"{MAX_COMMAND_LINES} lines; write a script with write_file and run that"
+        )
+    return None
+
+
+# Files that make something run later (hooks, build/test config, shell
+# start-up). Flagged in the approval prompt; not refused.
+_AUTORUN_NAMES = frozenset({
+    "conftest.py", "setup.py", "Makefile", "makefile", ".envrc", ".bashrc",
+    ".zshrc", ".profile", "package.json", "pyproject.toml", "tasks.json",
+    "sitecustomize.py", "usercustomize.py",
+})
+
+
+def _diff_summary(path: Path, root: Path, before: str, after: str) -> str:
     lines = list(
         difflib.unified_diff(
             before.splitlines(), after.splitlines(), "before", "after", lineterm=""
         )
     )
+    if len(lines) > MAX_PREVIEW_DIFF_LINES:
+        raise Refused(
+            f"refused: change is larger than {MAX_PREVIEW_DIFF_LINES} diff lines; "
+            "split it into smaller edits"
+        )
     added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
     removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
-    shown = lines[:MAX_PREVIEW_DIFF_LINES]
-    if len(lines) > len(shown):
-        shown.append(f"... {len(lines) - len(shown)} more diff lines not shown")
-    return printable("\n".join([f"{path}  (+{added} -{removed} lines)", *shown]))
+    head = [f"{path}  (+{added} -{removed} lines)"]
+    rel_parts = path.relative_to(Path(root).resolve()).parts
+    if ".git" in rel_parts or path.name in _AUTORUN_NAMES or path.suffix == ".pth" or (
+        path.exists() and os.access(path, os.X_OK)
+    ):
+        head.append("WARNING: this file can make code run later (hook, build/test config, "
+                    "executable or start-up file)")
+    return printable("\n".join([*head, *lines]))
 
 
 def _read_for_preview(p: Path) -> str:
@@ -519,8 +569,9 @@ def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
     try:
         if name == "run_bash":
             command = args.get("command")
-            if not isinstance(command, str) or not command.strip():
-                return {"error": "command must be a non-empty string"}
+            err = _check_command(command)
+            if err:
+                return {"error": err}
             shown = "\n".join(f"  | {ln}" for ln in printable(command).split("\n"))
             return {"summary": f"run_bash in {Path(root).resolve()}:\n{shown}"}
         if name == "write_file":
@@ -530,8 +581,8 @@ def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
             p = confine(args.get("path", ""), root)
             if p.exists():
                 before = _read_for_preview(p)
-                return {"summary": "write_file (overwrite):\n" + _diff_summary(p, before, content)}
-            return {"summary": "write_file (new file):\n" + _diff_summary(p, "", content)}
+                return {"summary": "write_file (overwrite):\n" + _diff_summary(p, root, before, content)}
+            return {"summary": "write_file (new file):\n" + _diff_summary(p, root, "", content)}
         if name == "edit_file":
             old, new = args.get("old"), args.get("new")
             if not isinstance(old, str) or not isinstance(new, str):
@@ -541,7 +592,7 @@ def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
                 return {"error": f"not found: {p}"}
             before = _read_for_preview(p)
             after = _apply_edit(before, old, new)
-            return {"summary": "edit_file:\n" + _diff_summary(p, before, after)}
+            return {"summary": "edit_file:\n" + _diff_summary(p, root, before, after)}
     except Refused as e:
         return {"error": str(e)}
     return {"error": f"{name} is not a gated tool"}

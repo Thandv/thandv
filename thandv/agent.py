@@ -117,7 +117,7 @@ class Agent:
         so we inject it for the `retrieve` tool. The model can still override
         by passing `persona="all"` or a specific name explicitly.
         """
-        if call["name"] == "retrieve":
+        if call["name"] == "retrieve" and isinstance(call["args"], dict):
             call["args"].setdefault("persona", self.persona.name if self.persona else "all")
 
     @staticmethod
@@ -129,10 +129,13 @@ class Agent:
             call = json.loads(m.group(1))
         except json.JSONDecodeError:
             return None
-        if not isinstance(call, dict) or "name" not in call:
+        if not isinstance(call, dict):
             return None
-        call.setdefault("args", {})
-        return call
+        name = call.get("name")
+        args = call.get("args", {})
+        if not isinstance(name, str) or not name or not isinstance(args, dict):
+            return None
+        return {"name": name, "args": args}
 
     @staticmethod
     def _extract_inline_json_tool_call(text: str) -> dict | None:

@@ -27,6 +27,7 @@ from thandv.evals import (
 )
 from thandv.personas import get_persona, list_personas
 from thandv.runtime import describe, detect_host, pick_model
+from thandv.tools import printable
 
 
 def _check_ollama() -> bool:
@@ -65,6 +66,11 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0
 
 
+# Longer approval summaries are cut in the REPL, with an `f` answer to
+# print the whole thing before deciding.
+APPROVAL_PREVIEW_LINES = 60
+
+
 def _flush_typeahead(stream) -> None:
     """Drop anything typed (or pasted) before the approval question appeared,
     so a queued line cannot answer it."""
@@ -82,17 +88,30 @@ def _repl_approver(name: str, summary: str) -> bool:
     Without a terminal on stdin there is no one to ask, so deny rather than
     read the next piped line (or block waiting for one).
     """
-    print(f"\n[approval needed] {summary}", flush=True)
+    lines = summary.split("\n")
+    long = len(lines) > APPROVAL_PREVIEW_LINES
+    shown = lines[:APPROVAL_PREVIEW_LINES] if long else lines
+    # Reset terminal attributes first, as a second layer behind escaping
+    # model output in _stream_turn.
+    print("\x1b[0m\n[approval needed] " + "\n".join(shown), flush=True)
+    if long:
+        print(f"... {len(lines) - len(shown)} more lines not shown; answer f to see all",
+              flush=True)
     if not sys.stdin.isatty():
         print("[no terminal on stdin; denied]", flush=True)
         return False
-    _flush_typeahead(sys.stdin)
-    try:
-        answer = input(f"Allow {name}? [y/N] ")
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    return answer.strip().lower() in ("y", "yes")
+    choices = "[y/N/f]" if long else "[y/N]"
+    while True:
+        _flush_typeahead(sys.stdin)
+        try:
+            answer = input(f"Allow {name}? {choices} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if long and answer == "f":
+            print(summary, flush=True)
+            continue
+        return answer in ("y", "yes")
 
 
 def _approve_all(name: str, summary: str) -> bool:
@@ -182,7 +201,10 @@ def _stream_turn(agent: Agent, prompt: str) -> bool:
     """
     try:
         for chunk in agent.turn(prompt):
-            print(chunk, end="", flush=True)
+            # Model text is untrusted: escape control characters so it can't
+            # hide or forge the approval prompt (SGR conceal, cursor moves,
+            # alternate screen, OSC clipboard writes).
+            print(printable(chunk), end="", flush=True)
     except KeyboardInterrupt:
         print("\n[interrupted]")
         return True
