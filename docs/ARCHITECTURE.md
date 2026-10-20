@@ -159,8 +159,11 @@ whether a side effect happens.
   part; the REPL prints the first 60 lines of a longer summary and an `f`
   answer prints all of it. Files that make code run later (`.git/`
   hooks, `conftest.py`, `Makefile`, shell start-up files, executables,
-  ...) get a WARNING line. Model output itself is printed with control
-  characters escaped, and the prompt resets terminal attributes, so a
+  ...; matched case-insensitively) get a WARNING line. Everything shown
+  is escaped unless plainly printable (controls, bidi overrides, lone
+  surrogates, non-ASCII spaces), and commands are shown as pure ASCII so
+  a look-alike such as a no-break space cannot disguise what runs. Model
+  output itself is printed with the same escaping, and the prompt resets terminal attributes, so a
   reply cannot conceal or forge the real prompt. Anything else — Enter, `n`,
   EOF, Ctrl-C, an approver that raises — returns
   `{"error": "denied by user"}` to the model. `read_file`, `list_dir` and
@@ -188,8 +191,9 @@ whether a side effect happens.
   `O_NOFOLLOW` plus a re-check of the resolved path elsewhere) and must
   be a regular file with one hard link; it is only truncated after those
   checks. Missing parent directories are created before the open, so a
+  refused write can leave new empty directories inside the root, and a
   concurrent local process that swaps a directory for a symlink at that
-  moment can still make empty directories outside the root.
+  moment can still make empty directories outside it.
 - **Second layer only.** `run_bash` still refuses commands containing
   `rm -rf`, `mkfs`, `dd if=`, `:(){:|`, `shutdown`, `reboot`, with no
   override. That substring list is trivially bypassed and is not a
@@ -197,7 +201,7 @@ whether a side effect happens.
   run in their own process group, which is killed as a whole on the 30 s
   timeout.
 
-`read_file` can read anything the user can, and an approved `run_bash`
+`read_file` can read any regular file the user can (FIFOs and devices are refused), and an approved `run_bash`
 runs with the user's full privileges: this is not a sandbox. The eval
 verifiers are a separate path: they run model-written Python to grade it
 (including from the training daemon) without asking, contained only by a

@@ -21,7 +21,6 @@ import os
 import signal
 import stat
 import subprocess
-import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -108,7 +107,16 @@ def read_file(path: str) -> dict[str, Any]:
         return {"error": f"not found: {p}"}
     if p.is_dir():
         return {"error": f"is a directory: {p}"}
-    with p.open("rb") as f:
+    # Non-blocking open + regular-file check: a FIFO or /dev/tty would
+    # otherwise hang the turn or read the person's next typed line.
+    try:
+        fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as e:
+        return {"error": f"cannot open {p}: {e.strerror}"}
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return {"error": f"not a regular file: {p}"}
+    with os.fdopen(fd, "rb") as f:
         # Read one byte past the cap so we know whether we truncated
         # without loading arbitrarily large files into memory.
         data = f.read(MAX_READ_BYTES + 1)
@@ -495,15 +503,20 @@ def check_args(name: str, args: Any) -> str | None:
     return None
 
 
-def printable(text: str) -> str:
-    """Escape control and format characters (ANSI escapes, carriage returns,
-    bidi overrides) so what the person sees is what will run."""
+def printable(text: str, *, ascii_only: bool = False) -> str:
+    """Escape everything that is not a plainly printable character (newline
+    and tab excepted) so what the person sees is what will run: C0/C1
+    controls and ANSI escapes, format characters such as bidi overrides,
+    lone surrogates (which a UTF-8-mode stdout would emit as raw bytes),
+    unassigned code points and non-ASCII spaces. With `ascii_only`, every
+    non-ASCII character is escaped too (used for shell commands, where a
+    look-alike character can change what runs)."""
     out = []
     for ch in text:
-        if ch in "\n\t" or unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"):
+        if ch in "\n\t" or (ch.isprintable() and (ch.isascii() or not ascii_only)):
             out.append(ch)
         else:
-            out.append(ch.encode("unicode_escape").decode("ascii"))
+            out.append(ch.encode("unicode_escape", "backslashreplace").decode("ascii"))
     return "".join(out)
 
 
@@ -520,11 +533,15 @@ def _check_command(command: Any) -> str | None:
 
 # Files that make something run later (hooks, build/test config, shell
 # start-up). Flagged in the approval prompt; not refused.
+# Compared case-insensitively (macOS file systems usually are).
 _AUTORUN_NAMES = frozenset({
-    "conftest.py", "setup.py", "Makefile", "makefile", ".envrc", ".bashrc",
-    ".zshrc", ".profile", "package.json", "pyproject.toml", "tasks.json",
-    "sitecustomize.py", "usercustomize.py",
+    "conftest.py", "setup.py", "setup.cfg", "noxfile.py", "tox.ini", "makefile",
+    "gnumakefile", "justfile", ".envrc", ".bashrc", ".bash_profile", ".zshrc",
+    ".zshenv", ".zprofile", ".profile", "package.json", "pyproject.toml",
+    "tasks.json", "launch.json", ".pre-commit-config.yaml", "sitecustomize.py",
+    "usercustomize.py",
 })
+_AUTORUN_DIRS = frozenset({".git", ".github", ".vscode", ".idea", ".husky"})
 
 
 def _diff_summary(path: Path, root: Path, before: str, after: str) -> str:
@@ -541,8 +558,9 @@ def _diff_summary(path: Path, root: Path, before: str, after: str) -> str:
     added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
     removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
     head = [f"{path}  (+{added} -{removed} lines)"]
-    rel_parts = path.relative_to(Path(root).resolve()).parts
-    if ".git" in rel_parts or path.name in _AUTORUN_NAMES or path.suffix == ".pth" or (
+    rel_parts = {part.casefold() for part in path.relative_to(Path(root).resolve()).parts}
+    name = path.name.casefold()
+    if rel_parts & _AUTORUN_DIRS or name in _AUTORUN_NAMES or name.endswith(".pth") or (
         path.exists() and os.access(path, os.X_OK)
     ):
         head.append("WARNING: this file can make code run later (hook, build/test config, "
@@ -572,7 +590,8 @@ def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
             err = _check_command(command)
             if err:
                 return {"error": err}
-            shown = "\n".join(f"  | {ln}" for ln in printable(command).split("\n"))
+            escaped = printable(command, ascii_only=True)
+            shown = "\n".join(f"  | {ln}" for ln in escaped.split("\n"))
             return {"summary": f"run_bash in {Path(root).resolve()}:\n{shown}"}
         if name == "write_file":
             content = args.get("content")
