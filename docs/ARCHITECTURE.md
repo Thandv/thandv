@@ -142,7 +142,9 @@ with `persona="all"` to search across every corpus.
 
 `run_bash` refuses commands containing `rm -rf`, `mkfs`, `:(){:|`,
 `shutdown`, `reboot` unless the caller passes `confirm=True`. That's a
-soft seatbelt, not a sandbox. Don't run Thandv as root, don't expose its
+soft seatbelt, not a sandbox. Commands get `/dev/null` as stdin and run
+in their own process group, which is killed as a whole on the 30 s
+timeout (so backgrounded children don't outlive it). Don't run Thandv as root, don't expose its
 HTTP surface, don't trust untrusted skill markdown.
 
 ## Tools

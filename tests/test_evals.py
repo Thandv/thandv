@@ -854,3 +854,59 @@ def test_writer_prefs_verifier_rejects_empty_reply():
 def test_writer_prefs_unique_task_ids():
     ids = [t.id for t in get_suite("writer-prefs").tasks]
     assert len(ids) == len(set(ids))
+
+
+# --- Sandbox hardening ------------------------------------------------------
+
+_EXIT_HACK = "```python\nimport sys\nsys.exit(0)\n```"
+_OS_EXIT_HACK = "```python\nimport os\nos._exit(0)\n```"
+
+
+def test_humaneval_verifier_rejects_early_exit_hack():
+    test_code = "def check(candidate):\n    assert candidate(2) == 4\n"
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    assert verify(_EXIT_HACK) is False
+    assert verify(_OS_EXIT_HACK) is False
+
+
+def test_mbpp_verifier_rejects_early_exit_hack():
+    verify = eval_mod._mbpp_verifier(["assert f(2) == 4"])
+    assert verify(_EXIT_HACK) is False
+
+
+def test_swe_lite_verifier_rejects_early_exit_hack():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    assert task.verify(_EXIT_HACK) is False
+    assert task.verify(_OS_EXIT_HACK) is False
+
+
+def test_swe_lite_verifier_still_accepts_correct_fix():
+    task = next(t for t in get_suite("swe-lite").tasks if t.id == "fix-off-by-one")
+    good = "```python\ndef last_n_items(items, n):\n    return items[-n:]\n```"
+    assert task.verify(good) is True
+
+
+def test_smoke_is_prime_rejects_exit_hack_without_killing_runner():
+    task = next(t for t in get_suite("smoke").tasks if t.id == "is-prime")
+    # In-process exec used to let SystemExit escape and kill the runner.
+    assert task.verify(_EXIT_HACK) is False
+
+
+def test_smoke_is_prime_times_out_on_infinite_loop(monkeypatch):
+    monkeypatch.setattr(eval_mod, "SMOKE_TIMEOUT_S", 1)
+    task = next(t for t in get_suite("smoke").tasks if t.id == "is-prime")
+    forever = "```python\ndef is_prime(n):\n    while True:\n        pass\n```"
+    assert task.verify(forever) is False
+
+
+def test_verifier_runs_in_fresh_temp_cwd(tmp_path, monkeypatch):
+    """Model code must not write into (or import from) the user's cwd."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "helper_mod.py").write_text("VALUE = 1\n")
+    test_code = "def check(candidate):\n    assert candidate() == 1\n"
+    verify = eval_mod._humaneval_verifier(test_code, "f")
+    writes = "```python\nopen('stray.txt', 'w').write('x')\ndef f():\n    return 1\n```"
+    assert verify(writes) is True
+    assert not (tmp_path / "stray.txt").exists()
+    imports = "```python\nfrom helper_mod import VALUE\ndef f():\n    return VALUE\n```"
+    assert verify(imports) is False

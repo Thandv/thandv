@@ -29,12 +29,14 @@ import shutil
 import signal
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator, TextIO
 
 from thandv import training_backend as _tb
-from thandv.config import THANDV_HOME
+from thandv.config import THANDV_HOME, atomic_write_text
 from thandv.evals import run_suite
 
 TRAINING_DIR = THANDV_HOME / "training"
@@ -115,27 +117,88 @@ def load_state() -> TrainerState:
 
 def save_state(state: TrainerState) -> None:
     _ensure_dirs()
-    STATE_PATH.write_text(json.dumps(asdict(state), indent=2))
+    atomic_write_text(STATE_PATH, json.dumps(asdict(state), indent=2))
 
 
 # --- Queue operations -----------------------------------------------------
 
+def new_queue_path(stem: str) -> Path:
+    """A fresh `QUEUE_DIR/<unix-ts>-<stem>.jsonl` path that doesn't exist.
+
+    The second-resolution timestamp keeps lexical order == FIFO order, but
+    two writers with the same stem in the same second (a scripted
+    `sample-public` loop, two quick `enqueue`s) used to get the same name
+    and the second silently overwrote the first. Disambiguate with a
+    numeric suffix instead.
+    """
+    _ensure_dirs()
+    base = f"{int(time.time())}-{stem}"
+    path = QUEUE_DIR / f"{base}.jsonl"
+    n = 2
+    while path.exists() or _partial_path(path).exists():
+        path = QUEUE_DIR / f"{base}-{n}.jsonl"
+        n += 1
+    return path
+
+
+def _partial_path(path: Path) -> Path:
+    return path.with_name(path.name + ".partial")
+
+
+@contextmanager
+def queue_writer(path: Path) -> Iterator[TextIO]:
+    """Open a queue file for writing without exposing it half-written.
+
+    Writes go to `<path>.partial`, which the daemon's `*.jsonl` glob
+    ignores, and the file is renamed into place when the block exits.
+    Without this a tick firing during a minutes-long `distill` run would
+    train on (and move to processed/) the first few examples, and every
+    later line would follow the moved file out of the queue untrained.
+
+    The rename happens even if the block raises: callers such as
+    `teachers.distill` deliberately keep partial output.
+    """
+    tmp = _partial_path(path)
+    try:
+        with tmp.open("w") as f:
+            yield f
+    finally:
+        if tmp.exists():
+            tmp.replace(path)
+
+
 def enqueue_examples(name: str, examples: list[dict]) -> Path:
     """Append a JSONL file of `{"prompt": ..., "completion": ...}` to the queue."""
-    _ensure_dirs()
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    path = QUEUE_DIR / f"{int(time.time())}-{safe_name}.jsonl"
-    with path.open("w") as f:
+    path = new_queue_path(safe_name)
+    with queue_writer(path) as f:
         for ex in examples:
             f.write(json.dumps(ex) + "\n")
     return path
 
 
 def enqueue_path(src: Path) -> Path:
-    """Copy an existing JSONL file into the queue."""
-    _ensure_dirs()
-    dst = QUEUE_DIR / f"{int(time.time())}-{src.name}"
-    dst.write_bytes(src.read_bytes())
+    """Copy an existing JSONL file into the queue.
+
+    Every non-blank line must be a JSON object; ValueError (with the line
+    number) otherwise, so a malformed file fails here rather than deep
+    inside a training run. The queued copy always ends in `.jsonl` — a
+    `data.json` source used to be queued under a name the daemon never
+    globs, so it was reported as queued but never trained on.
+    """
+    data = src.read_text()
+    for i, line in enumerate(data.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{src}: line {i}: not valid JSON ({e.msg})") from None
+        if not isinstance(obj, dict):
+            raise ValueError(f"{src}: line {i}: expected a JSON object")
+    dst = new_queue_path(src.name.removesuffix(".jsonl"))
+    with queue_writer(dst) as f:
+        f.write(data)
     return dst
 
 
@@ -222,6 +285,22 @@ def _discard_adapter(adapter_id: str, ollama_model: str) -> None:
 
 # --- Tick: one full train → eval → promote cycle --------------------------
 
+def _save_tick_state(state: TrainerState) -> None:
+    """Persist a tick's state without clobbering a concurrent pause.
+
+    tick() loads the state at the start and saves at the end, and the
+    train + eval in between can take many minutes. `thandv train pause`
+    issued meanwhile wrote paused=True, which the tick's stale copy then
+    overwrote with False - the pause was silently lost. The paused flag
+    is owned by pause()/resume(), so re-read it from disk before saving.
+    """
+    try:
+        state.paused = load_state().paused
+    except (OSError, ValueError, TypeError):
+        pass  # unreadable state file: keep the tick's view
+    save_state(state)
+
+
 def _log_outcome(outcome: dict) -> dict:
     _ensure_dirs()
     log_path = LOGS_DIR / f"tick-{time.time_ns()}.json"
@@ -264,7 +343,7 @@ def tick(
         try:
             baseline = _run_eval(current_best_model, suite=suite)
         except Exception as e:
-            save_state(state)
+            _save_tick_state(state)
             return _log_outcome(
                 {
                     "action": "skip",
@@ -280,7 +359,7 @@ def tick(
         state.baseline_measured = True
         # Lock the persona's active model to base if nothing's been promoted.
         state.active_models_by_persona.setdefault(persona, base_model)
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "baseline",
@@ -294,13 +373,13 @@ def tick(
 
     queue_file = _pop_queue()
     if queue_file is None:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {"action": "skip", "reason": "queue empty", "persona": persona, "at": _now()}
         )
 
     if dry_run:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -320,7 +399,7 @@ def tick(
             hf_base_repo=state.hf_base_model or None,
         )
     except Exception as e:
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -336,7 +415,7 @@ def tick(
         new_rate = _run_eval(new_ollama_model, suite=suite)
     except Exception as e:
         _discard_adapter(adapter_id, new_ollama_model)
-        save_state(state)
+        _save_tick_state(state)
         return _log_outcome(
             {
                 "action": "skip",
@@ -369,7 +448,7 @@ def tick(
 
     # Consume the queue file regardless.
     queue_file.rename(PROCESSED_DIR / queue_file.name)
-    save_state(state)
+    _save_tick_state(state)
 
     return _log_outcome(
         {
@@ -387,10 +466,24 @@ def tick(
 
 
 def _run_eval(model: str, suite: str = "smoke") -> float:
-    """Return the pass rate (0.0–1.0) of `suite` for `model`."""
+    """Return the pass rate (0.0–1.0) of `suite` for `model`.
+
+    Raises RuntimeError if any task errored instead of producing a reply.
+    `run_suite` records such tasks as failures, which is right for a
+    human-read report but wrong for the promotion gate: with Ollama down
+    every task "fails", so a baseline would be locked in at 0.0 (and any
+    later adapter would beat it), or a good new adapter would be scored
+    0.0 and discarded. Raising lets `tick` take its skip path instead.
+    """
     results = run_suite(suite, model=model)
     if not results:
         return 0.0
+    errored = [r for r in results if r.error]
+    if errored:
+        raise RuntimeError(
+            f"{len(errored)}/{len(results)} eval tasks errored "
+            f"(first: {errored[0].task_id}: {errored[0].error})"
+        )
     return sum(1 for r in results if r.passed) / len(results)
 
 
@@ -414,17 +507,32 @@ def run_forever(model: str, persona: str = "code", interval_s: int = 300) -> Non
     def _term(_signum, _frame):
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, _term)
+    prev_handler = signal.signal(signal.SIGTERM, _term)
 
     try:
         while True:
             if not load_state().paused:
-                tick(model, persona)
+                try:
+                    tick(model, persona)
+                except Exception as e:
+                    # tick() already turns expected failures into "skip"
+                    # outcomes; anything that still escapes (corrupt
+                    # state file, disk full, ...) is logged and retried
+                    # next interval instead of killing the daemon.
+                    _log_outcome(
+                        {
+                            "action": "error",
+                            "reason": f"{type(e).__name__}: {e}",
+                            "persona": persona,
+                            "at": _now(),
+                        }
+                    )
             time.sleep(interval_s)
     except KeyboardInterrupt:
         pass
     finally:
         PID_PATH.unlink(missing_ok=True)
+        signal.signal(signal.SIGTERM, prev_handler)
 
 
 def is_running() -> bool:

@@ -31,14 +31,16 @@ def returns_from_prices(prices: list[float]) -> list[float]:
     Length = len(prices) - 1. Raises ValueError on prices <= 0 (would imply
     a delisting or data error, not a return we can compute).
     """
+    for v in prices:
+        # Check every price, including the last: a trailing 0 or negative
+        # would otherwise produce a bogus -100% (or worse) final return.
+        if not math.isfinite(v):
+            raise ValueError(f"non-finite price in series: {v}")
+        if v <= 0:
+            raise ValueError(f"non-positive price in series: {v}")
     if len(prices) < 2:
         return []
-    out: list[float] = []
-    for prev, curr in zip(prices, prices[1:]):
-        if prev <= 0:
-            raise ValueError(f"non-positive price in series: {prev}")
-        out.append(curr / prev - 1.0)
-    return out
+    return [curr / prev - 1.0 for prev, curr in zip(prices, prices[1:])]
 
 
 # --- Risk metrics -------------------------------------------------------
@@ -270,10 +272,13 @@ def exposure_summary(positions: list[Position]) -> dict:
 # --- Backtest harness ---------------------------------------------------
 
 def _validate_signal(s: float) -> int:
-    si = int(s)
-    if si not in (-1, 0, 1):
+    # Compare the value itself, not int(s): int() truncates, so 0.5 and
+    # 1.7 used to be accepted as 0 and 1, silently turning fractional
+    # position weights into a different strategy. NaN/inf are rejected
+    # too (int() would raise an unhelpful ValueError/OverflowError).
+    if isinstance(s, bool) or s not in (-1, 0, 1):
         raise ValueError(f"signal must be -1, 0, or 1; got {s}")
-    return si
+    return int(s)
 
 
 def backtest(
@@ -359,9 +364,12 @@ def read_prices_csv(path: str | Path, column: str = "price") -> list[float]:
             if not cell:
                 continue
             try:
-                out.append(float(cell))
+                value = float(cell)
             except ValueError as e:
                 raise ValueError(f"{p}: row {i}: {e}") from e
+            if not math.isfinite(value):
+                raise ValueError(f"{p}: row {i}: non-finite value {cell!r}")
+            out.append(value)
     return out
 
 

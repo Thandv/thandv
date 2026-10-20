@@ -48,3 +48,41 @@ def test_ensure_dirs_idempotent(thandv_home):
     assert config.SESSIONS_DIR.is_dir()
     assert config.MEMORY_DIR.is_dir()
     assert config.SKILLS_DIR.is_dir()
+
+
+def test_load_tolerates_corrupt_config(thandv_home, capsys):
+    from thandv import config
+
+    config.CONFIG_PATH.write_text('{"model": "qwen", ')  # torn write
+    cfg = Config.load()
+    assert cfg == Config()
+    assert "unreadable config" in capsys.readouterr().err
+
+
+def test_load_tolerates_non_object_config(thandv_home, capsys):
+    from thandv import config
+
+    config.CONFIG_PATH.write_text("[1, 2]")
+    assert Config.load() == Config()
+    assert "not a JSON object" in capsys.readouterr().err
+
+
+def test_save_is_atomic_and_leaves_no_temp_files(thandv_home):
+    from pathlib import Path
+
+    import pytest
+
+    from thandv import config
+
+    Config(model="old").save()
+
+    def boom(self, *a, **k):
+        raise OSError("disk full")
+
+    # A failed write must leave the previous config intact.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "write_text", boom)
+        with pytest.raises(OSError):
+            Config(model="new").save()
+    assert Config.load().model == "old"
+    assert [p.name for p in config.CONFIG_PATH.parent.iterdir() if ".tmp-" in p.name] == []

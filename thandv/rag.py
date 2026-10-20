@@ -76,6 +76,14 @@ def chunk_text(
     then yields with the last `overlap` characters carried into the next
     chunk so context isn't lost at boundaries.
     """
+    if max_chars < 1:
+        raise ValueError(f"max_chars must be positive; got {max_chars}")
+    # Clamp overlap to half a chunk: the hard-split step (max_chars -
+    # overlap) must stay positive — overlap >= max_chars used to raise
+    # (step 0) or silently yield nothing (negative step) for oversized
+    # paragraphs — and an overlap near max_chars would re-embed almost
+    # every character many times.
+    overlap = max(0, min(overlap, max_chars // 2))
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     if not paragraphs:
         return
@@ -92,12 +100,18 @@ def chunk_text(
                 buf_len = 0
             for i in range(0, len(para), max_chars - overlap):
                 yield para[i : i + max_chars]
+                if i + max_chars >= len(para):
+                    break  # the rest is already inside this piece
             continue
 
         if buf_len + len(para) + 2 > max_chars and buf:
             chunk = "\n\n".join(buf)
             yield chunk
-            tail = chunk[-overlap:] if overlap > 0 else ""
+            # Carry at most `overlap` chars, and never so many that tail +
+            # separator + paragraph overflows max_chars (chunks used to grow
+            # to max_chars + overlap + 2).
+            tail_len = min(overlap, max_chars - len(para) - 2)
+            tail = chunk[-tail_len:] if tail_len > 0 else ""
             buf = [tail, para] if tail else [para]
             buf_len = sum(len(x) for x in buf) + 2 * (len(buf) - 1)
         else:
@@ -149,8 +163,16 @@ def load_chunks(persona: str) -> list[Chunk]:
             line = line.strip()
             if not line:
                 continue
-            data = json.loads(line)
-            out.append(Chunk(text=data["text"], source=data["source"], embedding=data["embedding"]))
+            # Skip lines we can't use rather than failing every retrieve:
+            # an ingest interrupted mid-write (Ctrl-C, disk full) leaves a
+            # truncated final line in this append-only file.
+            try:
+                data = json.loads(line)
+                out.append(
+                    Chunk(text=data["text"], source=data["source"], embedding=data["embedding"])
+                )
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
     return out
 
 
@@ -172,6 +194,28 @@ def clear_corpus(persona: str) -> bool:
 # --- Ingest ------------------------------------------------------------
 
 INGESTABLE_SUFFIXES = (".md", ".markdown", ".txt", ".rst", ".py", ".pyi")
+
+# Directory names skipped when walking a directory: VCS metadata, virtual
+# envs, caches, and vendored dependencies. `thandv ingest .` in a project
+# checkout used to embed every .py file under .venv/ and node_modules/ —
+# thousands of third-party files that drown out the user's own code.
+# Any directory whose name starts with "." is skipped as well.
+SKIPPED_DIR_NAMES = frozenset(
+    {"node_modules", "__pycache__", "site-packages", "venv", "build", "dist"}
+)
+
+
+def _iter_ingestable_files(root: Path) -> Iterator[Path]:
+    """Ingestable files under `root`, in a stable order, pruning skipped
+    dirs. Suffix match is case-insensitive (README.MD counts)."""
+    for f in sorted(root.rglob("*")):
+        rel_dirs = f.relative_to(root).parts[:-1]
+        if any(d.startswith(".") or d in SKIPPED_DIR_NAMES for d in rel_dirs):
+            continue
+        if f.name.startswith("."):
+            continue
+        if f.suffix.lower() in INGESTABLE_SUFFIXES and f.is_file():
+            yield f
 
 
 def ingest_text(text: str, source: str, persona: str = "all") -> int:
@@ -212,11 +256,9 @@ def ingest_path(p: Path, persona: str = "all") -> tuple[int, int]:
 
     files = 0
     chunks = 0
-    for suffix in INGESTABLE_SUFFIXES:
-        for f in p.rglob(f"*{suffix}"):
-            if f.is_file():
-                chunks += ingest_text(f.read_text(errors="replace"), source=str(f), persona=persona)
-                files += 1
+    for f in _iter_ingestable_files(p):
+        chunks += ingest_text(f.read_text(errors="replace"), source=str(f), persona=persona)
+        files += 1
     return (files, chunks)
 
 
@@ -266,10 +308,10 @@ def retrieve(
 
 def corpus_stats(persona: str | None = None) -> dict:
     if persona is None or persona == "all":
-        all_personas = list_personas_with_corpora()
+        per_persona = [corpus_stats(p) for p in list_personas_with_corpora()]
         return {
-            "personas": [corpus_stats(p) for p in all_personas],
-            "total_chunks": sum(corpus_stats(p)["chunks"] for p in all_personas),
+            "personas": per_persona,
+            "total_chunks": sum(s["chunks"] for s in per_persona),
         }
     chunks = load_chunks(persona)
     sources = sorted({c.source for c in chunks})

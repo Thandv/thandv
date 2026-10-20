@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,14 +168,10 @@ def promote_session(
     if not pairs:
         return None
 
-    trainer._ensure_dirs()
     if out_path is None:
-        out_path = (
-            trainer.QUEUE_DIR
-            / f"{int(time.time())}-session-{session_path.stem}.jsonl"
-        )
+        out_path = trainer.new_queue_path(f"session-{session_path.stem}")
 
-    with out_path.open("w") as f:
+    with trainer.queue_writer(out_path) as f:
         for p in pairs:
             f.write(json.dumps(p) + "\n")
 

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -200,14 +199,13 @@ def distill(
     provenance — partial output is more useful than no output.
     """
     teacher = get_teacher(teacher_name)
-    trainer._ensure_dirs()
     if out_path is None:
-        out_path = trainer.QUEUE_DIR / f"{int(time.time())}-distill-{teacher.name}.jsonl"
+        out_path = trainer.new_queue_path(f"distill-{teacher.name}")
 
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     successes = 0
     failures: list[dict] = []
-    with out_path.open("w") as f:
+    with trainer.queue_writer(out_path) as f:
         for i, prompt in enumerate(prompts, 1):
             try:
                 completion = call_teacher(

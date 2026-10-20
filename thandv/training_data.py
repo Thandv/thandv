@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import random
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -214,9 +213,8 @@ def queue_public_dataset(name: str, n: int, *, seed: int = 0) -> Path:
     count for greppable provenance.
     """
     examples = sample_public_dataset(name, n, seed=seed)
-    trainer._ensure_dirs()
-    path = trainer.QUEUE_DIR / f"{int(time.time())}-{name}-n{n}.jsonl"
-    with path.open("w") as f:
+    path = trainer.new_queue_path(f"{name}-n{n}")
+    with trainer.queue_writer(path) as f:
         for ex in examples:
             f.write(json.dumps(ex) + "\n")
     return path

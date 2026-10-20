@@ -882,3 +882,119 @@ def test_finance_paper_trade_status_disabled(thandv_home, monkeypatch, capsys):
     assert "(none)" in out
     assert "NOT_FINANCIAL_ADVICE" in out
     assert "register your own" in out.lower()
+
+
+def _chat_ready(monkeypatch, turn_impl):
+    from thandv import agent as agent_mod
+    from thandv import cli
+
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(cli, "_ensure_model", lambda m: True)
+    monkeypatch.setattr(agent_mod.Agent, "turn", turn_impl)
+
+
+def test_chat_one_shot_reports_connection_error(thandv_home, monkeypatch, capsys):
+    import requests
+
+    def turn(self, prompt):
+        yield "partial "
+        raise requests.ConnectionError("connection refused")
+
+    _chat_ready(monkeypatch, turn)
+    rc = main(["chat", "--persona", "code", "hi"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "partial" in captured.out
+    assert "connection refused" in captured.err
+    assert "ollama" in captured.err.lower()
+
+
+def test_chat_repl_survives_failed_turn(thandv_home, monkeypatch, capsys):
+    calls = []
+
+    def turn(self, prompt):
+        calls.append(prompt)
+        if prompt == "first":
+            raise RuntimeError("ollama error: model runner has unexpectedly stopped")
+        yield "second reply"
+
+    _chat_ready(monkeypatch, turn)
+    inputs = iter(["first", "second", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    rc = main(["chat", "--persona", "code"])
+    assert rc == 0
+    assert calls == ["first", "second"]
+    captured = capsys.readouterr()
+    assert "unexpectedly stopped" in captured.err
+    assert "second reply" in captured.out
+
+
+def test_chat_ctrl_c_interrupts_reply_not_session(thandv_home, monkeypatch, capsys):
+    def turn(self, prompt):
+        if prompt == "long":
+            yield "start..."
+            raise KeyboardInterrupt
+        yield "ok"
+
+    _chat_ready(monkeypatch, turn)
+    inputs = iter(["long", "short", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    rc = main(["chat", "--persona", "code"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out
+    assert "ok" in out
+
+
+@pytest.mark.parametrize(
+    "kv",
+    [
+        "temperature=hot",
+        "max_tokens=lots",
+        "temperature=nan",
+        "auto_tools=ture",
+        "finance_paper_trading_enabled=maybe",
+        "persona=no-such-persona",
+    ],
+)
+def test_config_set_rejects_bad_values_without_saving(thandv_home, capsys, kv):
+    from thandv import config
+
+    rc = main(["config", "--set", kv])
+    assert rc == 2
+    assert "bad value" in capsys.readouterr().err
+    assert not config.CONFIG_PATH.exists()
+
+
+def test_config_set_bool_spellings(thandv_home, capsys):
+    from thandv.config import Config
+
+    assert main(["config", "--set", "auto_tools=off"]) == 0
+    assert Config.load().auto_tools is False
+    assert main(["config", "--set", "auto_tools=YES"]) == 0
+    assert Config.load().auto_tools is True
+
+
+def test_train_enqueue_rejects_malformed_file(thandv_home, tmp_path, capsys):
+    src = tmp_path / "bad.jsonl"
+    src.write_text("[1, 2, 3]\n")
+    rc = main(["train", "enqueue", str(src)])
+    assert rc == 2
+    assert "not queued" in capsys.readouterr().err
+
+
+def test_ingest_reports_embedding_failure(thandv_home, monkeypatch, tmp_path, capsys):
+    from thandv import cli, rag
+
+    src = tmp_path / "doc.md"
+    src.write_text("hello")
+    monkeypatch.setattr(cli, "_check_ollama", lambda: True)
+    monkeypatch.setattr(rag, "embed_model_available", lambda: True)
+
+    def down(_text):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(rag, "embed", down)
+    rc = main(["ingest", str(src), "--persona", "code"])
+    assert rc == 2
+    assert "ingest failed" in capsys.readouterr().err

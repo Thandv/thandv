@@ -109,10 +109,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
     print("Type your message. Ctrl-D or /exit to quit.\n")
 
     if args.prompt:
-        for chunk in agent.turn(args.prompt):
-            print(chunk, end="", flush=True)
-        print()
-        return 0
+        return 0 if _stream_turn(agent, args.prompt) else 1
 
     while True:
         try:
@@ -124,9 +121,33 @@ def cmd_chat(args: argparse.Namespace) -> int:
             continue
         if user in ("/exit", "/quit"):
             return 0
-        for chunk in agent.turn(user):
+        _stream_turn(agent, user)
+
+
+def _stream_turn(agent: Agent, prompt: str) -> bool:
+    """Print one agent turn as it streams. Returns False if it failed.
+
+    A dropped Ollama connection, an HTTP error, or an in-band model error
+    ends the turn with a one-line message instead of a traceback, so the
+    REPL (and its session history) survives. Ctrl-C interrupts the reply,
+    not the whole session.
+    """
+    try:
+        for chunk in agent.turn(prompt):
             print(chunk, end="", flush=True)
+    except KeyboardInterrupt:
+        print("\n[interrupted]")
+        return True
+    except (requests.RequestException, RuntimeError) as e:
         print()
+        print(
+            f"error talking to the model: {e}\n"
+            "Is ollama still running? (`ollama serve`)",
+            file=sys.stderr,
+        )
+        return False
+    print()
+    return True
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -253,7 +274,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     print(f"ingesting {src} into persona={persona} ...")
-    files, chunks = rag.ingest_path(src, persona=persona)
+    try:
+        files, chunks = rag.ingest_path(src, persona=persona)
+    except RuntimeError as e:
+        # Embedding failed part-way (Ollama stopped, model unloaded).
+        # Chunks written before the failure stay in the corpus.
+        print(f"ingest failed: {e}", file=sys.stderr)
+        return 2
     print(f"done. files={files} chunks={chunks}")
     return 0
 
@@ -299,7 +326,11 @@ def cmd_train(args: argparse.Namespace) -> int:
         if not src.exists():
             print(f"not found: {src}", file=sys.stderr)
             return 2
-        dst = trainer.enqueue_path(src)
+        try:
+            dst = trainer.enqueue_path(src)
+        except (ValueError, UnicodeDecodeError, IsADirectoryError) as e:
+            print(f"not queued: {e}", file=sys.stderr)
+            return 2
         print(f"queued: {dst.name}")
         return 0
 
@@ -791,6 +822,40 @@ def cmd_finance(args: argparse.Namespace) -> int:
     return 2
 
 
+_TRUE_STRINGS = ("1", "true", "yes", "on")
+_FALSE_STRINGS = ("0", "false", "no", "off")
+
+
+def _parse_config_value(key: str, current: object, raw: str) -> object:
+    """Coerce a `--set key=value` string to the key's type, or raise
+    ValueError. Typos must not be saved silently: `true` misspelled as
+    `ture` used to persist False, which for an opt-in gate is the
+    opposite of what the user asked for."""
+    if isinstance(current, bool):
+        lowered = raw.strip().lower()
+        if lowered in _TRUE_STRINGS:
+            return True
+        if lowered in _FALSE_STRINGS:
+            return False
+        raise ValueError(f"expected a boolean (true/false), got {raw!r}")
+    if isinstance(current, int):
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"expected an integer, got {raw!r}") from None
+    if isinstance(current, float):
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(f"expected a number, got {raw!r}") from None
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError(f"expected a finite number, got {raw!r}")
+        return value
+    if key == "persona":
+        get_persona(raw)  # raises ValueError listing the known personas
+    return raw
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = Config.load()
     if args.set:
@@ -802,14 +867,12 @@ def cmd_config(args: argparse.Namespace) -> int:
             if not hasattr(cfg, k):
                 print(f"unknown key: {k}", file=sys.stderr)
                 return 2
-            current = getattr(cfg, k)
-            if isinstance(current, bool):
-                v = v.lower() in ("1", "true", "yes")
-            elif isinstance(current, int):
-                v = int(v)
-            elif isinstance(current, float):
-                v = float(v)
-            setattr(cfg, k, v)
+            try:
+                value = _parse_config_value(k, getattr(cfg, k), v)
+            except ValueError as e:
+                print(f"bad value for {k}: {e}", file=sys.stderr)
+                return 2
+            setattr(cfg, k, value)
         cfg.save()
     for k in cfg.__dataclass_fields__:
         print(f"{k}={getattr(cfg, k)}")

@@ -219,3 +219,82 @@ def test_retrieve_schema_includes_persona_override():
     assert "persona" in fn["parameters"]["properties"]
     # persona is NOT in required — the runtime fills it in.
     assert "persona" not in fn["parameters"].get("required", [])
+
+
+def test_read_file_flags_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "MAX_READ_BYTES", 10)
+    p = tmp_path / "big.txt"
+    p.write_text("abcdefghijklmnop")
+    assert read_file(str(p))["truncated"] is True
+    small = tmp_path / "small.txt"
+    small.write_text("abc")
+    assert "truncated" not in read_file(str(small))
+
+
+def test_read_file_truncation_mid_multibyte_char_is_still_text(tmp_path, monkeypatch):
+    """A cap that splits a UTF-8 character must not flip the file to <binary>."""
+    monkeypatch.setattr(tools, "MAX_READ_BYTES", 4)
+    p = tmp_path / "utf8.txt"
+    p.write_text("abcé and more", encoding="utf-8")  # 'é' is bytes 4-5
+    out = read_file(str(p))
+    assert out["content"] == "abc"
+    assert out["truncated"] is True
+
+
+def test_read_file_real_binary_still_reported(tmp_path):
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"\xff\xfe\x00\x81" * 4)
+    assert read_file(str(p))["content"].startswith("<binary")
+
+
+def test_edit_file_preserves_crlf_line_endings(tmp_path):
+    p = tmp_path / "win.txt"
+    p.write_bytes(b"line one\r\nline two\r\nline three\r\n")
+    out = edit_file(str(p), "line two", "LINE TWO")
+    assert out["ok"] is True
+    assert p.read_bytes() == b"line one\r\nLINE TWO\r\nline three\r\n"
+
+
+def test_edit_file_matches_lf_snippet_against_crlf_file(tmp_path):
+    p = tmp_path / "win.py"
+    p.write_bytes(b"def f():\r\n    return 1\r\n")
+    out = edit_file(str(p), "def f():\n    return 1", "def f():\n    return 2")
+    assert out["ok"] is True
+    assert p.read_bytes() == b"def f():\r\n    return 2\r\n"
+
+
+def test_edit_file_rejects_empty_old(tmp_path):
+    p = tmp_path / "empty.txt"
+    p.write_text("")
+    out = edit_file(str(p), "", "injected")
+    assert "error" in out and "non-empty" in out["error"]
+    assert p.read_text() == ""
+
+
+def test_edit_file_on_directory(tmp_path):
+    out = edit_file(str(tmp_path), "a", "b")
+    assert "error" in out and "directory" in out["error"]
+
+
+def test_run_bash_does_not_read_terminal_stdin():
+    # `cat` with no args reads stdin; it must see EOF immediately rather
+    # than block on (or consume) the user's terminal.
+    out = run_bash("cat; echo done")
+    assert out["exit"] == 0
+    assert "done" in out["stdout"]
+
+
+def test_run_bash_timeout_kills_background_children(monkeypatch, tmp_path):
+    import os
+    import time
+
+    if os.name != "posix":
+        return
+    monkeypatch.setattr(tools, "MAX_BASH_SECONDS", 1)
+    marker = tmp_path / "survived"
+    t0 = time.time()
+    out = run_bash(f"(sleep 2; touch {marker}) & sleep 10")
+    assert "timeout" in out["error"]
+    assert time.time() - t0 < 5
+    time.sleep(2.5)
+    assert not marker.exists(), "background child outlived the timeout"
