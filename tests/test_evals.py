@@ -79,9 +79,10 @@ class _FakeAgent:
 
     _replies: dict[str, str] = {}
 
-    def __init__(self, config, persona=None):
+    def __init__(self, config, persona=None, approve=None):
         self.config = config
         self.persona = persona
+        self.approve = approve
         self.session_path = type("P", (), {"name": "fake-session"})()
 
     def turn(self, prompt: str):

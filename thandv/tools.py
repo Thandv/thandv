@@ -2,13 +2,26 @@
 
 Schema is JSON-in / JSON-out; the agent loop is responsible for parsing the
 model's tool-call block and dispatching here.
+
+Security model (see docs/ARCHITECTURE.md, "Human gate"):
+
+- `run_bash`, `write_file` and `edit_file` have side effects. The agent asks
+  the person before dispatching them (`GATED_TOOLS`); nothing in a tool's
+  arguments can skip that question.
+- `write_file` and `edit_file` only touch regular files whose resolved path
+  (symlinks followed) lies under the session's working-directory root.
+- `dispatch` rejects arguments that are not in the tool's schema, so a model
+  cannot pass hidden keywords such as `root`.
 """
 
 from __future__ import annotations
 
+import difflib
 import os
 import signal
+import stat
 import subprocess
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,10 +30,56 @@ from thandv import rag
 MAX_READ_BYTES = 200_000
 MAX_BASH_SECONDS = 30
 MAX_RETRIEVE_K = 20
+MAX_PREVIEW_DIFF_LINES = 60
+
+# Tools that run without asking the person. Everything else in TOOLS has a
+# side effect and must pass the approval gate in the agent loop.
+UNGATED_TOOLS = frozenset({"read_file", "list_dir", "retrieve"})
+GATED_TOOLS = frozenset({"run_bash", "write_file", "edit_file"})
+
+
+class Refused(Exception):
+    """A tool refused to act; the message is returned to the model."""
 
 
 def _resolve(path: str) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def confine(path: str, root: Path) -> Path:
+    """Resolve `path` (relative paths are taken from `root`) and require the
+    result to lie under `root`. Symlinks, `..` and `~` are resolved first, so
+    a link inside the root that points out of it is refused."""
+    if not isinstance(path, str) or not path:
+        raise Refused("path must be a non-empty string")
+    root = Path(root).resolve()
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = root / p
+    resolved = p.resolve()
+    if not resolved.is_relative_to(root):
+        raise Refused(f"refused: {resolved} is outside the working directory {root}")
+    return resolved
+
+
+def _open_regular(p: Path, flags: int) -> int:
+    """Open `p` without following a final symlink and require a regular file
+    with a single link (a hard link could alias a file outside the root)."""
+    flags |= os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(p, flags, 0o666)
+    except OSError as e:
+        raise Refused(f"refused: cannot open {p} safely: {e.strerror}") from e
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused(f"refused: {p} is not a regular file")
+        if st.st_nlink > 1:
+            raise Refused(f"refused: {p} has more than one hard link")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def read_file(path: str) -> dict[str, Any]:
@@ -66,26 +125,27 @@ def _decode_utf8_prefix(data: bytes, truncated: bool) -> str:
         raise
 
 
-def write_file(path: str, content: str) -> dict[str, Any]:
-    p = _resolve(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return {"path": str(p), "bytes": len(content.encode("utf-8"))}
+def write_file(path: str, content: str, *, root: Path) -> dict[str, Any]:
+    try:
+        p = confine(path, root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Re-check after mkdir: the parent chain now exists and resolves.
+        p = confine(str(p), root)
+        fd = _open_regular(p, os.O_WRONLY | os.O_CREAT)
+    except Refused as e:
+        return {"error": str(e)}
+    data = content.encode("utf-8")
+    with os.fdopen(fd, "wb") as f:
+        f.truncate(0)
+        f.write(data)
+    return {"path": str(p), "bytes": len(data)}
 
 
-def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
-    p = _resolve(path)
-    if not p.exists():
-        return {"error": f"not found: {p}"}
-    if p.is_dir():
-        return {"error": f"is a directory: {p}"}
+def _apply_edit(text: str, old: str, new: str) -> str:
+    """Return `text` with the single occurrence of `old` replaced by `new`,
+    or raise Refused with the reason it cannot be applied."""
     if not old:
-        return {"error": "old string must be non-empty; use write_file to create or overwrite"}
-    # newline="" disables universal-newline translation in both directions,
-    # so a CRLF file stays CRLF after the edit instead of being silently
-    # rewritten with LF endings on every line.
-    with p.open(encoding="utf-8", newline="") as f:
-        text = f.read()
+        raise Refused("old string must be non-empty; use write_file to create or overwrite")
     if old not in text and "\r\n" in text:
         # The model almost always sends LF-only snippets. Match them
         # against a CRLF file by converting the snippet's endings.
@@ -93,11 +153,34 @@ def edit_file(path: str, old: str, new: str) -> dict[str, Any]:
         if old_crlf in text:
             old, new = old_crlf, _to_crlf(new)
     if old not in text:
-        return {"error": "old string not found"}
+        raise Refused("old string not found")
     if text.count(old) > 1:
-        return {"error": "old string is not unique; include more context"}
-    with p.open("w", encoding="utf-8", newline="") as f:
-        f.write(text.replace(old, new, 1))
+        raise Refused("old string is not unique; include more context")
+    return text.replace(old, new, 1)
+
+
+def edit_file(path: str, old: str, new: str, *, root: Path) -> dict[str, Any]:
+    try:
+        p = confine(path, root)
+        if not p.exists():
+            return {"error": f"not found: {p}"}
+        if p.is_dir():
+            return {"error": f"is a directory: {p}"}
+        fd = _open_regular(p, os.O_RDWR)
+    except Refused as e:
+        return {"error": str(e)}
+    # newline="" disables universal-newline translation in both directions,
+    # so a CRLF file stays CRLF after the edit instead of being silently
+    # rewritten with LF endings on every line.
+    with os.fdopen(fd, "r+", encoding="utf-8", newline="") as f:
+        text = f.read()
+        try:
+            updated = _apply_edit(text, old, new)
+        except Refused as e:
+            return {"error": str(e)}
+        f.seek(0)
+        f.truncate(0)
+        f.write(updated)
     return {"path": str(p), "ok": True}
 
 
@@ -171,15 +254,27 @@ def run_with_timeout(
     return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 
 
+# Second layer only. This substring denylist is NOT a security boundary:
+# it is trivially bypassed (quoting, variables, `find -delete`, ...). The
+# boundary is the human approval gate in the agent loop; this only catches
+# an obviously destructive command the person approved by mistake, and
+# nothing the model sends can switch it off.
 _DANGEROUS = ("rm -rf", "mkfs", "dd if=", ":(){:|", "shutdown", "reboot")
 
 
-def run_bash(command: str, confirm: bool = False) -> dict[str, Any]:
+def run_bash(command: str, *, root: Path) -> dict[str, Any]:
+    if not isinstance(command, str) or not command.strip():
+        return {"error": "command must be a non-empty string"}
     lowered = command.lower()
-    if any(token in lowered for token in _DANGEROUS) and not confirm:
-        return {"error": "refused: command looks destructive; ask the user to confirm"}
+    if any(token in lowered for token in _DANGEROUS):
+        return {
+            "error": "refused: command matches the destructive-command denylist; "
+            "the user can run it themselves"
+        }
     try:
-        proc = run_with_timeout(command, timeout=MAX_BASH_SECONDS, shell=True)
+        # shell=True is the point of this tool: the person approved this
+        # exact string, shown in full, before it reaches /bin/sh.
+        proc = run_with_timeout(command, timeout=MAX_BASH_SECONDS, shell=True, cwd=Path(root))
         return {
             "exit": proc.returncode,
             "stdout": proc.stdout[-8000:],
@@ -242,7 +337,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file. Overwrites if it exists; creates parent dirs.",
+            "description": (
+                "Write content to a file under the working directory. Overwrites if "
+                "it exists; creates parent dirs. The user is asked to approve it."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -258,9 +356,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "edit_file",
             "description": (
-                "Replace a single occurrence of `old` with `new` in the file at `path`. "
-                "Errors if `old` is missing or appears more than once — include enough "
-                "surrounding context to make it unique."
+                "Replace a single occurrence of `old` with `new` in the file at `path` "
+                "(under the working directory). Errors if `old` is missing or appears "
+                "more than once — include enough surrounding context to make it "
+                "unique. The user is asked to approve it."
             ),
             "parameters": {
                 "type": "object",
@@ -292,18 +391,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "run_bash",
             "description": (
-                "Run a shell command with a 30-second timeout. Captures stdout and "
-                "stderr (tail-truncated). Refuses destructive commands (rm -rf, "
-                "mkfs, shutdown, etc.) unless `confirm=true`."
+                "Run a shell command in the working directory with a 30-second "
+                "timeout. The user is asked to approve every command. Captures "
+                "stdout and stderr (tail-truncated)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Set true to allow destructive commands. Default false.",
-                    },
                 },
                 "required": ["command"],
             },
@@ -336,27 +431,139 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+_SCHEMA_PROPS: dict[str, dict[str, Any]] = {
+    sch["function"]["name"]: sch["function"]["parameters"]["properties"] for sch in TOOL_SCHEMAS
+}
+
+
 def _validate_schemas() -> None:
-    """Tripwire: every tool in TOOLS has a schema, and vice versa."""
+    """Tripwire: every tool in TOOLS has a schema, and vice versa; every tool
+    is classified as gated or ungated."""
     impl_names = set(TOOLS)
-    schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+    schema_names = set(_SCHEMA_PROPS)
     missing_schema = impl_names - schema_names
     missing_impl = schema_names - impl_names
     if missing_schema:
         raise RuntimeError(f"tools missing schemas: {sorted(missing_schema)}")
     if missing_impl:
         raise RuntimeError(f"schemas missing implementations: {sorted(missing_impl)}")
+    if GATED_TOOLS & UNGATED_TOOLS or (GATED_TOOLS | UNGATED_TOOLS) != impl_names:
+        raise RuntimeError("every tool must be in exactly one of GATED_TOOLS / UNGATED_TOOLS")
 
 
 _validate_schemas()
 
 
-def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
+def check_args(name: str, args: Any) -> str | None:
+    """Return an error message if `args` is not acceptable for tool `name`.
+
+    Only schema properties are allowed (so hidden keywords such as `root` or
+    `force` are bad arguments), and string properties must be strings.
+    """
+    props = _SCHEMA_PROPS.get(name)
+    if props is None:
+        return f"unknown tool: {name}"
+    if not isinstance(args, dict):
+        return f"bad args for {name}: arguments must be an object"
+    unknown = sorted(str(k) for k in args if k not in props)
+    if unknown:
+        return f"bad args for {name}: unexpected argument(s) {unknown}"
+    for key, spec in props.items():
+        if spec.get("type") == "string" and key in args and not isinstance(args[key], str):
+            return f"bad args for {name}: {key} must be a string"
+    return None
+
+
+def printable(text: str) -> str:
+    """Escape control and format characters (ANSI escapes, carriage returns,
+    bidi overrides) so what the person sees is what will run."""
+    out = []
+    for ch in text:
+        if ch in "\n\t" or unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"):
+            out.append(ch)
+        else:
+            out.append(ch.encode("unicode_escape").decode("ascii"))
+    return "".join(out)
+
+
+def _diff_summary(path: Path, before: str, after: str) -> str:
+    lines = list(
+        difflib.unified_diff(
+            before.splitlines(), after.splitlines(), "before", "after", lineterm=""
+        )
+    )
+    added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    shown = lines[:MAX_PREVIEW_DIFF_LINES]
+    if len(lines) > len(shown):
+        shown.append(f"... {len(lines) - len(shown)} more diff lines not shown")
+    return printable("\n".join([f"{path}  (+{added} -{removed} lines)", *shown]))
+
+
+def _read_for_preview(p: Path) -> str:
+    if not p.is_file():
+        raise Refused(f"refused: {p} is not a regular file")
+    with p.open(encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
+def describe(name: str, args: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Build the text the person approves for a gated call.
+
+    Returns {"summary": str}, or {"error": str} when the call would be
+    refused anyway (bad args, path outside root) and there is nothing to ask.
+    """
+    err = check_args(name, args)
+    if err:
+        return {"error": err}
+    try:
+        if name == "run_bash":
+            command = args.get("command")
+            if not isinstance(command, str) or not command.strip():
+                return {"error": "command must be a non-empty string"}
+            shown = "\n".join(f"  | {ln}" for ln in printable(command).split("\n"))
+            return {"summary": f"run_bash in {Path(root).resolve()}:\n{shown}"}
+        if name == "write_file":
+            content = args.get("content")
+            if not isinstance(content, str):
+                return {"error": "bad args for write_file: content is required"}
+            p = confine(args.get("path", ""), root)
+            if p.exists():
+                before = _read_for_preview(p)
+                return {"summary": "write_file (overwrite):\n" + _diff_summary(p, before, content)}
+            return {"summary": "write_file (new file):\n" + _diff_summary(p, "", content)}
+        if name == "edit_file":
+            old, new = args.get("old"), args.get("new")
+            if not isinstance(old, str) or not isinstance(new, str):
+                return {"error": "bad args for edit_file: old and new are required"}
+            p = confine(args.get("path", ""), root)
+            if not p.exists():
+                return {"error": f"not found: {p}"}
+            before = _read_for_preview(p)
+            after = _apply_edit(before, old, new)
+            return {"summary": "edit_file:\n" + _diff_summary(p, before, after)}
+    except Refused as e:
+        return {"error": str(e)}
+    return {"error": f"{name} is not a gated tool"}
+
+
+def dispatch(name: str, args: dict[str, Any], *, root: Path | None = None) -> dict[str, Any]:
+    """Run tool `name`. Does NOT ask the person: callers must gate
+    GATED_TOOLS first (see Agent._gate). Gated tools need the session root
+    and fail closed without it."""
     fn = TOOLS.get(name)
     if fn is None:
         return {"error": f"unknown tool: {name}"}
+    err = check_args(name, args)
+    if err:
+        return {"error": err}
+    kwargs = dict(args)
+    if name in GATED_TOOLS:
+        if root is None:
+            return {"error": f"{name} needs a working-directory root"}
+        kwargs["root"] = root
     try:
-        return fn(**args)
+        return fn(**kwargs)
     except TypeError as e:
         return {"error": f"bad args for {name}: {e}"}
     except Exception as e:

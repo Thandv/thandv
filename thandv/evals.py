@@ -944,6 +944,10 @@ def _ensure_tasks(suite: EvalSuite) -> list[EvalTask]:
 
 # --- Runner -----------------------------------------------------------------
 
+def _approve_all(name: str, summary: str) -> bool:
+    return True
+
+
 def run_suite(
     suite_name: str,
     model: str,
@@ -951,7 +955,11 @@ def run_suite(
     limit: int | None = None,
     out_path: Path | None = None,
     on_progress: Callable[[int, int, EvalResult], None] | None = None,
+    allow_tools: bool = False,
 ) -> list[EvalResult]:
+    """Run a suite non-interactively. Side-effecting tools (run_bash,
+    write_file, edit_file) are denied unless `allow_tools` is set by the
+    person (`thandv eval --allow-tools`); the training daemon never sets it."""
     suite = get_suite(suite_name)
     persona = get_persona(persona_name or suite.default_persona)
     all_tasks = _ensure_tasks(suite)
@@ -962,7 +970,7 @@ def run_suite(
 
     for i, task in enumerate(tasks, 1):
         cfg = Config(model=model, persona=persona.name)
-        agent = Agent(config=cfg, persona=persona)
+        agent = Agent(config=cfg, persona=persona, approve=_approve_all if allow_tools else None)
         t0 = time.time()
         error = ""
         try:

@@ -65,7 +65,50 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0
 
 
+def _flush_typeahead(stream) -> None:
+    """Drop anything typed (or pasted) before the approval question appeared,
+    so a queued line cannot answer it."""
+    try:
+        import termios
+
+        termios.tcflush(stream.fileno(), termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError, AttributeError):
+        pass
+
+
+def _repl_approver(name: str, summary: str) -> bool:
+    """Ask the person at the terminal; anything but a typed y/yes is a no.
+
+    Without a terminal on stdin there is no one to ask, so deny rather than
+    read the next piped line (or block waiting for one).
+    """
+    print(f"\n[approval needed] {summary}", flush=True)
+    if not sys.stdin.isatty():
+        print("[no terminal on stdin; denied]", flush=True)
+        return False
+    _flush_typeahead(sys.stdin)
+    try:
+        answer = input(f"Allow {name}? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def _approve_all(name: str, summary: str) -> bool:
+    """Used only when the person passed --allow-tools on the command line."""
+    print(f"\n[auto-approved by --allow-tools] {summary}", flush=True)
+    return True
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
+    allow_tools = getattr(args, "allow_tools", False)
+    if allow_tools and not args.prompt:
+        print(
+            "--allow-tools only applies to a one-shot PROMPT; the REPL asks before each tool",
+            file=sys.stderr,
+        )
+        return 2
     ensure_dirs()
     cfg = Config.load()
     if not cfg.model:
@@ -98,7 +141,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print(f"model `{active_model}` not pulled. Run: `ollama pull {active_model}`", file=sys.stderr)
         return 2
 
-    agent = Agent(config=cfg, persona=persona)
+    if args.prompt:
+        # One-shot mode has no one to ask: deny unless the person opted in.
+        approver = _approve_all if allow_tools else None
+    else:
+        approver = _repl_approver
+    agent = Agent(config=cfg, persona=persona, approve=approver)
     adapter_note = (
         f" [persona adapter: {persona_model}]" if persona_model else ""
     )
@@ -213,6 +261,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             persona_name=persona_name,
             limit=args.limit,
             on_progress=progress,
+            allow_tools=args.allow_tools,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -887,6 +936,12 @@ def main(argv: list[str] | None = None) -> int:
     p_chat = sub.add_parser("chat", help="start an interactive chat (default)")
     p_chat.add_argument("prompt", nargs="?", help="one-shot prompt instead of REPL")
     p_chat.add_argument("--persona", help="persona to use (default: from config)")
+    p_chat.add_argument(
+        "--allow-tools",
+        action="store_true",
+        help="one-shot PROMPT only: let run_bash/write_file/edit_file run without asking "
+        "(they are denied by default)",
+    )
     p_chat.set_defaults(func=cmd_chat)
 
     p_doctor = sub.add_parser("doctor", help="show host + model + ollama status")
@@ -906,6 +961,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-update-best",
         action="store_true",
         help="don't update the best-record file even on a full run",
+    )
+    p_eval.add_argument(
+        "--allow-tools",
+        action="store_true",
+        help="let the model run run_bash/write_file/edit_file without asking during the "
+        "eval (denied by default)",
     )
     p_eval.set_defaults(func=cmd_eval)
 

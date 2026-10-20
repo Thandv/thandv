@@ -72,10 +72,24 @@ Detailed prompts and skill lists for each persona live in
 
 ## CLI reference
 
-### `thandv chat [PROMPT] [--persona NAME]`
+### `thandv chat [PROMPT] [--persona NAME] [--allow-tools]`
 
 Interactive REPL with the active persona's system prompt + skills. With a
 positional `PROMPT`, runs one turn and exits.
+
+**Tool approval.** Before the model runs `run_bash`, `write_file` or
+`edit_file`, the REPL shows the full command (or the file path and a diff
+summary) and asks `Allow <tool>? [y/N]`. Only a typed `y`/`yes` runs it;
+anything else tells the model `denied by user`. `read_file`, `list_dir`
+and `retrieve` run without asking. If stdin is not a terminal, every
+request is denied. Writes are confined to the directory you started
+`thandv` in; paths outside it (via `..`, an absolute path, `~` or a
+symlink) are refused without asking, and `run_bash` runs there too.
+
+A one-shot `PROMPT` has no one to ask, so those three tools are denied
+unless you pass `--allow-tools`, which approves them all for that one
+turn (writes stay confined). `--allow-tools` is rejected without a
+`PROMPT`.
 
 Inside the REPL: `/exit` or `/quit` (or Ctrl-D) to leave.
 
@@ -92,10 +106,15 @@ Diagnostic snapshot. Reports:
 - Active persona
 - `thandv` version
 
-### `thandv eval [SUITE] [--persona NAME] [--limit N] [--list] [--show-best] [--no-update-best]`
+### `thandv eval [SUITE] [--persona NAME] [--limit N] [--list] [--show-best] [--no-update-best] [--allow-tools]`
 
 Runs an eval suite against the current model + persona. Results land in
 `~/.thandv/evals/<suite>-<unix-ts>.json`.
+
+Evals run non-interactively, so `run_bash`, `write_file` and `edit_file`
+are denied unless you pass `--allow-tools`. No built-in suite needs them
+(answers are checked from the reply text); the training daemon's
+auto-evals never allow them.
 
 `--limit N` runs only the first N tasks. `--list` shows available suites
 and personas, then exits.

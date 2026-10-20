@@ -17,7 +17,10 @@ fine-tuning of open models — without ever sending a token to a paid API.
 
 - A `thandv` CLI with an agent loop, tool use (`read_file`, `write_file`,
   `edit_file`, `list_dir`, `run_bash`), persistent sessions, a skills
-  directory, and a memory directory.
+  directory, and a memory directory. The REPL asks you `y/N` before every
+  shell command, file write or edit, and writes are confined to the
+  directory you started in; a one-shot `thandv chat "..."` denies those
+  tools unless you pass `--allow-tools`.
 - **Personas**: `code` (default), `writer`, `finance`. Same base model,
   different system prompt + skill subset. Switch with `--persona`.
 - **Eval harness**: `thandv eval` runs pluggable suites against the active
