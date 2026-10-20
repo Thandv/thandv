@@ -156,10 +156,12 @@ whether a side effect happens.
   escapes, `\r` and bidi overrides escaped) or the resolved path plus the
   full diff, and must type `y`/`yes`. Commands over 4000 characters or 40
   lines and changes over 2000 diff lines are refused rather than shown in
-  part; the REPL prints the first 60 lines of a longer summary and an `f`
-  answer prints all of it. Files that make code run later (`.git/`
-  hooks, `conftest.py`, `Makefile`, shell start-up files, executables,
-  ...; matched case-insensitively) get a WARNING line. Everything shown
+  part; the REPL prints as much of a longer summary as fits in 60 screen
+  rows (long lines count by how far they wrap) and an `f` answer prints
+  all of it. Files that make code run later (`.git/` hooks, `conftest.py`,
+  `Makefile`, shell start-up files, `.claude/` and `.cursor/` agent
+  settings, executables, ...; matched case-insensitively) get a WARNING
+  line. Everything shown
   is escaped unless plainly printable (controls, bidi overrides, lone
   surrogates, non-ASCII spaces), and commands are shown as pure ASCII so
   a look-alike such as a no-break space cannot disguise what runs. Model
