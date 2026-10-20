@@ -250,7 +250,6 @@ OLLAMA_TO_HF: dict[str, str] = {
     "qwen2.5-coder:32b": "Qwen/Qwen2.5-Coder-32B",
     "qwen2.5-coder:3b":  "Qwen/Qwen2.5-Coder-3B",
     "qwen3-coder:30b":   "Qwen/Qwen3-Coder-30B-A3B",
-    "qwen3-coder:14b":   "Qwen/Qwen3-Coder-14B",
     "llama3.2:3b":       "meta-llama/Llama-3.2-3B",
 }
 

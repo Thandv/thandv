@@ -1,8 +1,8 @@
 """Hardware detection and model selection.
 
 The goal: pick the strongest open-weights model that will plausibly run on the
-current machine. Defaults prefer Qwen3-Coder for coding-agent behavior closest
-to Claude Code; falls back to smaller variants on tight memory.
+current machine. The ladder starts at Qwen3-Coder 30B-A3B for hosts with
+enough memory and falls back to Qwen2.5-Coder variants on tighter memory.
 """
 
 from __future__ import annotations
@@ -71,7 +71,6 @@ MODEL_LADDER = [
     # (ollama_tag, min_ram_gb_for_unified_memory, min_vram_gb)
     ("qwen3-coder:30b",      48, 24),
     ("qwen2.5-coder:32b",    32, 20),
-    ("qwen3-coder:14b",      24, 12),
     ("qwen2.5-coder:14b",    20, 10),
     ("qwen2.5-coder:7b",     12,  6),
     ("qwen2.5-coder:3b",      8,  4),

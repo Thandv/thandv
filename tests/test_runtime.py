@@ -23,6 +23,15 @@ def test_pick_model_apple_silicon_64gb():
     assert pick_model(_host(total_ram_gb=64)) == "qwen3-coder:30b"
 
 
+def test_pick_model_apple_silicon_24gb_lands_on_qwen25_coder_14b():
+    assert pick_model(_host(total_ram_gb=24)) == "qwen2.5-coder:14b"
+
+
+def test_pick_model_nvidia_12gb_lands_on_qwen25_coder_14b():
+    h = _host(os="Linux", arch="x86_64", apple_silicon=False, has_nvidia=True, nvidia_vram_gb=12)
+    assert pick_model(h) == "qwen2.5-coder:14b"
+
+
 def test_pick_model_apple_silicon_16gb():
     # M2 16GB — should land on the 7b tier
     assert pick_model(_host(total_ram_gb=16)) == "qwen2.5-coder:7b"

@@ -302,3 +302,21 @@ def test_verify_training_setup_writes_tiny_queue_and_calls_train(thandv_home, tm
     assert captured["iters"] == 1
     assert info["backend"] == "fake"
     assert info["n_iters"] == 1
+
+
+# --- Ollama tag → HF repo mapping ------------------------------------------
+
+def test_every_model_ladder_tag_has_an_hf_mapping():
+    """Training resolves the runtime-picked tag via ollama_to_hf; a ladder
+    rung with no mapping would make `thandv train` fail on that host."""
+    from thandv.runtime import MODEL_LADDER
+
+    unmapped = [tag for tag, _, _ in MODEL_LADDER if tag not in tb.OLLAMA_TO_HF]
+    assert unmapped == []
+    for tag, _, _ in MODEL_LADDER:
+        assert tb.ollama_to_hf(tag) == tb.OLLAMA_TO_HF[tag]
+
+
+def test_ollama_to_hf_unknown_tag_raises_with_hint():
+    with pytest.raises(ValueError, match="--hf-model"):
+        tb.ollama_to_hf("no-such-model:1b")

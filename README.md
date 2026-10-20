@@ -35,8 +35,9 @@ fine-tuning of open models — without ever sending a token to a paid API.
   systemd templates ship in `scripts/`. The inner LoRA step is stubbed
   in v0.2.x; the orchestration is real. See
   [`docs/TRAINING.md`](docs/TRAINING.md).
-- Hardware-aware model selection: picks the strongest Qwen3-Coder /
-  Qwen2.5-Coder variant that fits the host (Apple Silicon, NVIDIA, or CPU).
+- Hardware-aware model selection: picks the strongest rung of a model
+  ladder that fits the host (Apple Silicon, NVIDIA, or CPU): Qwen3-Coder
+  30B-A3B, then Qwen2.5-Coder 32B / 14B / 7B / 3B, then Llama 3.2 3B.
 - Streaming output (tool-block JSON hidden from the user stream).
 - One-line install that pulls Ollama and the right model.
 - A PyInstaller build script that produces a single-file `thandv` binary.
@@ -105,8 +106,8 @@ Frontier models like Claude Opus 4.7 are closed-weights, hundreds of
 billions of parameters, trained on compute budgets in the nine-figure range.
 Nothing you install locally will be Claude. What you *can* do:
 
-1. **Pick the right open base.** Qwen3-Coder is currently the strongest open
-   coding model; we default to it.
+1. **Pick the right open base.** The ladder prefers Qwen3-Coder 30B-A3B
+   when the host has the memory for it, and Qwen2.5-Coder below that.
 2. **Lean on agent scaffolding.** Most of Claude Code's practical usefulness
    isn't raw model IQ — it's the loop, the tools, and the system prompt.
    That part we can copy.
