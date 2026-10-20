@@ -23,7 +23,11 @@ Available tools:
 - `write_file` args: {"path": str, "content": str}
 - `edit_file`  args: {"path": str, "old": str, "new": str}
 - `list_dir`   args: {"path": str}
-- `run_bash`   args: {"command": str, "confirm": bool (optional)}
+- `run_bash`   args: {"command": str}
+    `run_bash`, `write_file` and `edit_file` ask the user first. If the
+    result is "denied by user", do not retry the same call; explain what
+    you wanted to do and why. Writes must stay inside the working
+    directory.
 - `retrieve`   args: {"query": str, "k": int (1-20, default 5)}
     Looks up the top-k most relevant chunks from your active persona's
     corpus (a local vector store of documents the user has ingested).

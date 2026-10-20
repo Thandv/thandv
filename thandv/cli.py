@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import unicodedata
 from pathlib import Path
 
 import requests
@@ -27,6 +29,7 @@ from thandv.evals import (
 )
 from thandv.personas import get_persona, list_personas
 from thandv.runtime import describe, detect_host, pick_model
+from thandv.tools import printable
 
 
 def _check_ollama() -> bool:
@@ -65,7 +68,116 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0
 
 
+# Longer approval summaries are cut in the REPL, with an `f` answer to
+# print the whole thing before deciding. The budget is in screen rows, not
+# lines: one long line can wrap into hundreds of rows and scroll the header
+# (path, WARNING, start of the command) out of view.
+APPROVAL_PREVIEW_LINES = 60
+
+
+def _screen_width(ch: str) -> int:
+    if ch == "\t":
+        return 8  # at most one tab stop
+    return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+
+
+def _approval_preview(summary: str, cols: int) -> tuple[list[str], int]:
+    """The leading part of `summary` that fits in APPROVAL_PREVIEW_LINES
+    screen rows of width `cols`, and how many lines were not (fully) shown.
+    Widths are over-estimated, so the preview never exceeds the budget."""
+    cols = max(cols, 20)
+    lines = summary.split("\n")
+    shown: list[str] = []
+    budget = APPROVAL_PREVIEW_LINES * cols
+    for i, line in enumerate(lines):
+        width = sum(_screen_width(ch) for ch in line)
+        rows = max(1, -(-width // cols))
+        if rows * cols <= budget:
+            shown.append(line)
+            budget -= rows * cols
+            continue
+        # Show the start of the line that does not fit, then stop.
+        cut, used = 0, 0
+        for ch in line:
+            used += _screen_width(ch)
+            if used > budget - 4:
+                break
+            cut += 1
+        if cut:
+            shown.append(line[:cut] + " ...")
+        return shown, len(lines) - i
+    return shown, 0
+
+
+def _for_terminal(text: str) -> str:
+    """Escape what the terminal's encoding cannot show (a latin-1 or ASCII
+    locale), so printing never raises: a raise ended the turn, or made the
+    approver deny before the question was even shown."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(enc, "backslashreplace").decode(enc)
+    except LookupError:
+        return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _flush_typeahead(stream) -> None:
+    """Drop anything typed (or pasted) before the approval question appeared,
+    so a queued line cannot answer it."""
+    try:
+        import termios
+
+        termios.tcflush(stream.fileno(), termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError, AttributeError):
+        pass
+
+
+def _repl_approver(name: str, summary: str) -> bool:
+    """Ask the person at the terminal; anything but a typed y/yes is a no.
+
+    Without a terminal on stdin there is no one to ask, so deny rather than
+    read the next piped line (or block waiting for one).
+    """
+    shown, hidden = _approval_preview(
+        "[approval needed] " + summary, shutil.get_terminal_size().columns
+    )
+    long = hidden > 0
+    # Reset terminal attributes first, as a second layer behind escaping
+    # model output in _stream_turn.
+    print("\x1b[0m\n" + _for_terminal("\n".join(shown)), flush=True)
+    if long:
+        print(f"... {hidden} more lines not shown (or not in full); answer f to see all",
+              flush=True)
+    if not sys.stdin.isatty():
+        print("[no terminal on stdin; denied]", flush=True)
+        return False
+    choices = "[y/N/f]" if long else "[y/N]"
+    while True:
+        _flush_typeahead(sys.stdin)
+        try:
+            answer = input(f"Allow {name}? {choices} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if long and answer == "f":
+            print(_for_terminal(summary), flush=True)
+            continue
+        return answer in ("y", "yes")
+
+
+def _approve_all(name: str, summary: str) -> bool:
+    """Used only when the person passed --allow-tools on the command line."""
+    print(_for_terminal(f"\n[auto-approved by --allow-tools] {summary}"), flush=True)
+    return True
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
+    allow_tools = getattr(args, "allow_tools", False)
+    if allow_tools and not args.prompt:
+        print(
+            "--allow-tools only applies to a one-shot PROMPT; the REPL asks before each tool",
+            file=sys.stderr,
+        )
+        return 2
     ensure_dirs()
     cfg = Config.load()
     if not cfg.model:
@@ -98,7 +210,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print(f"model `{active_model}` not pulled. Run: `ollama pull {active_model}`", file=sys.stderr)
         return 2
 
-    agent = Agent(config=cfg, persona=persona)
+    if args.prompt:
+        # One-shot mode has no one to ask: deny unless the person opted in.
+        approver = _approve_all if allow_tools else None
+    else:
+        approver = _repl_approver
+    agent = Agent(config=cfg, persona=persona, approve=approver)
     adapter_note = (
         f" [persona adapter: {persona_model}]" if persona_model else ""
     )
@@ -134,7 +251,10 @@ def _stream_turn(agent: Agent, prompt: str) -> bool:
     """
     try:
         for chunk in agent.turn(prompt):
-            print(chunk, end="", flush=True)
+            # Model text is untrusted: escape control characters so it can't
+            # hide or forge the approval prompt (SGR conceal, cursor moves,
+            # alternate screen, OSC clipboard writes).
+            print(_for_terminal(printable(chunk)), end="", flush=True)
     except KeyboardInterrupt:
         print("\n[interrupted]")
         return True
@@ -213,6 +333,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             persona_name=persona_name,
             limit=args.limit,
             on_progress=progress,
+            allow_tools=args.allow_tools,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -887,6 +1008,12 @@ def main(argv: list[str] | None = None) -> int:
     p_chat = sub.add_parser("chat", help="start an interactive chat (default)")
     p_chat.add_argument("prompt", nargs="?", help="one-shot prompt instead of REPL")
     p_chat.add_argument("--persona", help="persona to use (default: from config)")
+    p_chat.add_argument(
+        "--allow-tools",
+        action="store_true",
+        help="one-shot PROMPT only: let run_bash/write_file/edit_file run without asking "
+        "(they are denied by default)",
+    )
     p_chat.set_defaults(func=cmd_chat)
 
     p_doctor = sub.add_parser("doctor", help="show host + model + ollama status")
@@ -906,6 +1033,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-update-best",
         action="store_true",
         help="don't update the best-record file even on a full run",
+    )
+    p_eval.add_argument(
+        "--allow-tools",
+        action="store_true",
+        help="let the model run run_bash/write_file/edit_file without asking during the "
+        "eval (denied by default)",
     )
     p_eval.set_defaults(func=cmd_eval)
 

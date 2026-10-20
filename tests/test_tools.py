@@ -1,4 +1,8 @@
 
+from pathlib import Path
+
+import pytest
+
 from thandv import tools
 from thandv.tools import dispatch, edit_file, list_dir, read_file, retrieve, run_bash, write_file
 
@@ -31,7 +35,7 @@ def test_read_file_truncates_large(tmp_path, monkeypatch):
 
 def test_write_file_creates_parents(tmp_path):
     target = tmp_path / "a" / "b" / "c.txt"
-    out = write_file(str(target), "yo")
+    out = write_file(str(target), "yo", root=tmp_path)
     assert out["bytes"] == 2
     assert target.read_text() == "yo"
 
@@ -39,7 +43,7 @@ def test_write_file_creates_parents(tmp_path):
 def test_edit_file_ok(tmp_path):
     p = tmp_path / "x.py"
     p.write_text("def foo(): pass\n")
-    out = edit_file(str(p), "foo", "bar")
+    out = edit_file(str(p), "foo", "bar", root=tmp_path)
     assert out["ok"] is True
     assert p.read_text() == "def bar(): pass\n"
 
@@ -47,19 +51,19 @@ def test_edit_file_ok(tmp_path):
 def test_edit_file_old_not_found(tmp_path):
     p = tmp_path / "x.py"
     p.write_text("def foo(): pass\n")
-    out = edit_file(str(p), "zzz", "qqq")
+    out = edit_file(str(p), "zzz", "qqq", root=tmp_path)
     assert "error" in out
 
 
 def test_edit_file_old_not_unique(tmp_path):
     p = tmp_path / "x.py"
     p.write_text("foo foo")
-    out = edit_file(str(p), "foo", "bar")
+    out = edit_file(str(p), "foo", "bar", root=tmp_path)
     assert "error" in out and "unique" in out["error"]
 
 
 def test_edit_file_missing(tmp_path):
-    out = edit_file(str(tmp_path / "nope.py"), "a", "b")
+    out = edit_file(str(tmp_path / "nope.py"), "a", "b", root=tmp_path)
     assert "error" in out and "not found" in out["error"]
 
 
@@ -80,36 +84,32 @@ def test_list_dir_not_a_directory(tmp_path):
 
 
 def test_run_bash_success():
-    out = run_bash("echo hello")
+    out = run_bash("echo hello", root=Path.cwd())
     assert out["exit"] == 0
     assert "hello" in out["stdout"]
 
 
 def test_run_bash_nonzero_exit():
-    out = run_bash("false")
+    out = run_bash("false", root=Path.cwd())
     assert out["exit"] != 0
 
 
 def test_run_bash_refuses_dangerous():
-    out = run_bash("rm -rf /tmp/definitely-does-not-exist-xyz")
+    out = run_bash("rm -rf /tmp/definitely-does-not-exist-xyz", root=Path.cwd())
     assert "error" in out
-    assert "destructive" in out["error"]
+    assert "denylist" in out["error"]
 
 
-def test_run_bash_dangerous_with_confirm(tmp_path):
-    # `rm -rf` on a tmp path *is* destructive but should be allowed when
-    # the caller explicitly confirms.
-    victim = tmp_path / "doomed"
-    victim.mkdir()
-    (victim / "f").write_text("x")
-    out = run_bash(f"rm -rf {victim}", confirm=True)
-    assert out["exit"] == 0
-    assert not victim.exists()
+def test_run_bash_has_no_confirm_override():
+    # The denylist is a second layer with no model-settable bypass: the old
+    # `confirm=True` keyword is gone from the function and the schema.
+    with pytest.raises(TypeError):
+        run_bash("rm -rf /tmp/definitely-does-not-exist-xyz", confirm=True)  # type: ignore[call-arg]
 
 
 def test_run_bash_timeout(monkeypatch):
     monkeypatch.setattr(tools, "MAX_BASH_SECONDS", 1)
-    out = run_bash("sleep 3")
+    out = run_bash("sleep 3", root=Path.cwd())
     assert "error" in out and "timeout" in out["error"]
 
 
@@ -250,7 +250,7 @@ def test_read_file_real_binary_still_reported(tmp_path):
 def test_edit_file_preserves_crlf_line_endings(tmp_path):
     p = tmp_path / "win.txt"
     p.write_bytes(b"line one\r\nline two\r\nline three\r\n")
-    out = edit_file(str(p), "line two", "LINE TWO")
+    out = edit_file(str(p), "line two", "LINE TWO", root=tmp_path)
     assert out["ok"] is True
     assert p.read_bytes() == b"line one\r\nLINE TWO\r\nline three\r\n"
 
@@ -258,7 +258,7 @@ def test_edit_file_preserves_crlf_line_endings(tmp_path):
 def test_edit_file_matches_lf_snippet_against_crlf_file(tmp_path):
     p = tmp_path / "win.py"
     p.write_bytes(b"def f():\r\n    return 1\r\n")
-    out = edit_file(str(p), "def f():\n    return 1", "def f():\n    return 2")
+    out = edit_file(str(p), "def f():\n    return 1", "def f():\n    return 2", root=tmp_path)
     assert out["ok"] is True
     assert p.read_bytes() == b"def f():\r\n    return 2\r\n"
 
@@ -266,20 +266,20 @@ def test_edit_file_matches_lf_snippet_against_crlf_file(tmp_path):
 def test_edit_file_rejects_empty_old(tmp_path):
     p = tmp_path / "empty.txt"
     p.write_text("")
-    out = edit_file(str(p), "", "injected")
+    out = edit_file(str(p), "", "injected", root=tmp_path)
     assert "error" in out and "non-empty" in out["error"]
     assert p.read_text() == ""
 
 
 def test_edit_file_on_directory(tmp_path):
-    out = edit_file(str(tmp_path), "a", "b")
+    out = edit_file(str(tmp_path), "a", "b", root=tmp_path)
     assert "error" in out and "directory" in out["error"]
 
 
 def test_run_bash_does_not_read_terminal_stdin():
     # `cat` with no args reads stdin; it must see EOF immediately rather
     # than block on (or consume) the user's terminal.
-    out = run_bash("cat; echo done")
+    out = run_bash("cat; echo done", root=Path.cwd())
     assert out["exit"] == 0
     assert "done" in out["stdout"]
 
@@ -293,7 +293,7 @@ def test_run_bash_timeout_kills_background_children(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "MAX_BASH_SECONDS", 1)
     marker = tmp_path / "survived"
     t0 = time.time()
-    out = run_bash(f"(sleep 2; touch {marker}) & sleep 10")
+    out = run_bash(f"(sleep 2; touch {marker}) & sleep 10", root=Path.cwd())
     assert "timeout" in out["error"]
     assert time.time() - t0 < 5
     time.sleep(2.5)

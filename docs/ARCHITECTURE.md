@@ -29,6 +29,12 @@
                      │ if tool block:
                      ▼
             ┌─────────────────────┐
+            │  approval gate      │── run_bash/write_file/edit_file:
+            │                     │   ask the person y/N first
+            └────────┬────────────┘
+                     │ approved (or read-only tool)
+                     ▼
+            ┌─────────────────────┐
             │  tools.dispatch     │── read/write/edit/list/bash
             └────────┬────────────┘
                      │ result JSON
@@ -138,28 +144,87 @@ The agent auto-injects the active persona into the `retrieve` tool's args
 so the model doesn't need to know its own name; the model can override
 with `persona="all"` to search across every corpus.
 
-### 7. Tools are sandboxed-by-convention, not by mechanism
+### 7. Human gate for side-effecting tools
 
-`run_bash` refuses commands containing `rm -rf`, `mkfs`, `:(){:|`,
-`shutdown`, `reboot` unless the caller passes `confirm=True`. That's a
-soft seatbelt, not a sandbox. Commands get `/dev/null` as stdin and run
-in their own process group, which is killed as a whole on the 30 s
-timeout (so backgrounded children don't outlive it). Don't run Thandv as root, don't expose its
-HTTP surface, don't trust untrusted skill markdown.
+Anything the model reads (a retrieved chunk, a file, a tool result) can
+carry prompt-injection text, so the model is never the one who decides
+whether a side effect happens.
+
+- **Gated tools.** `run_bash`, `write_file` and `edit_file`
+  (`tools.GATED_TOOLS`) go through `Agent._gate` before dispatch. The
+  person sees the full command (with control characters such as ANSI
+  escapes, `\r` and bidi overrides escaped) or the resolved path plus the
+  full diff, and must type `y`/`yes`. Commands over 4000 characters or 40
+  lines and changes over 2000 diff lines are refused rather than shown in
+  part; the REPL prints as much of a longer summary as fits in 60 screen
+  rows (long lines count by how far they wrap) and an `f` answer prints
+  all of it. Files that make code run later (`.git/` hooks, `conftest.py`,
+  `Makefile`, shell start-up files, `.claude/` and `.cursor/` agent
+  settings, executables, ...; matched case-insensitively) get a WARNING
+  line. Everything shown
+  is escaped unless plainly printable (controls, bidi overrides, lone
+  surrogates, non-ASCII spaces), and commands are shown as pure ASCII so
+  a look-alike such as a no-break space cannot disguise what runs. Model
+  output itself is printed with the same escaping, and the prompt resets terminal attributes, so a
+  reply cannot conceal or forge the real prompt. Anything else — Enter, `n`,
+  EOF, Ctrl-C, an approver that raises — returns
+  `{"error": "denied by user"}` to the model. `read_file`, `list_dir` and
+  `retrieve` are ungated (`tools.UNGATED_TOOLS`); an import-time tripwire
+  requires every tool to be in exactly one of the two sets.
+- **Who approves.** The approver is a callback on `Agent` set by the
+  CLI, never by the model. The REPL asks at the terminal, flushing any
+  type-ahead first so a pasted line can't answer; if stdin is not a
+  terminal it denies without reading. A one-shot `thandv chat PROMPT`, a
+  `thandv eval` run and the training daemon have no approver, so gated
+  tools are denied (`"denied: side-effecting tools need the user's
+  approval..."`). The person can opt in with `--allow-tools` on the
+  command line (`chat PROMPT` and `eval` only).
+- **No model-settable bypass.** `dispatch` rejects any argument that is
+  not in the tool's schema (`confirm`, `force`, `root`, ...) and any
+  non-string value for a string argument. Tool names are matched exactly;
+  `Run_Bash` or `bash` is an unknown tool.
+- **Write confinement.** `write_file`/`edit_file` resolve the path
+  (relative paths from the session root; `~`, `..` and symlinks —
+  including a symlinked parent directory — resolved first) and refuse it
+  unless it is inside the session's working-directory root (the cwd when
+  the session started; `run_bash` also runs there). Paths ending in `/`
+  are refused. The file is opened without following symlinks
+  (`O_NOFOLLOW_ANY` on macOS, so no component may be a symlink;
+  `O_NOFOLLOW` plus a re-check of the resolved path elsewhere) and must
+  be a regular file with one hard link; it is only truncated after those
+  checks. Missing parent directories are created before the open, so a
+  refused write can leave new empty directories inside the root, and a
+  concurrent local process that swaps a directory for a symlink at that
+  moment can still make empty directories outside it.
+- **Second layer only.** `run_bash` still refuses commands containing
+  `rm -rf`, `mkfs`, `dd if=`, `:(){:|`, `shutdown`, `reboot`, with no
+  override. That substring list is trivially bypassed and is not a
+  security boundary; the gate is. Commands get `/dev/null` as stdin and
+  run in their own process group, which is killed as a whole on the 30 s
+  timeout.
+
+`read_file` can read any regular file the user can (FIFOs and devices are refused), and an approved `run_bash`
+runs with the user's full privileges: this is not a sandbox. The eval
+verifiers are a separate path: they run model-written Python to grade it
+(including from the training daemon) without asking, contained only by a
+temporary directory — see "Sandbox honesty" in USAGE.md. Don't run
+Thandv as root, don't expose its HTTP surface, don't trust untrusted
+skill markdown.
 
 ## Tools
 
 | Tool         | Args                                       | Use                                  |
 |--------------|--------------------------------------------|--------------------------------------|
 | `read_file`  | `path`                                     | Read up to 200 KB; UTF-8 decoded.    |
-| `write_file` | `path`, `content`                          | Create parents; full overwrite.      |
-| `edit_file`  | `path`, `old`, `new`                       | Single-occurrence replace; errors if `old` is non-unique. |
+| `write_file` | `path`, `content`                          | **Gated.** Under the session root only; create parents; full overwrite. |
+| `edit_file`  | `path`, `old`, `new`                       | **Gated.** Under the session root only; single-occurrence replace; errors if `old` is non-unique. |
 | `list_dir`   | `path`                                     | Lists entries with `type ∈ {file, dir}`. |
-| `run_bash`   | `command`, `confirm` (optional)            | 30-second timeout, captures stdout/stderr (tail-truncated). |
+| `run_bash`   | `command`                                  | **Gated.** Runs in the session root; 30-second timeout, captures stdout/stderr (tail-truncated). |
 | `retrieve`   | `query`, `persona` (auto), `k` (1–20)      | Top-k chunks from the active persona's corpus by cosine similarity. Agent auto-fills `persona`. |
 
 Tools live in [`thandv/tools.py`](../thandv/tools.py); dispatcher is
-`dispatch(name, args)`.
+`dispatch(name, args, *, root)`. `dispatch` does not ask the person — the
+agent loop gates first — and refuses gated tools when no `root` is given.
 
 ## Storage layout
 

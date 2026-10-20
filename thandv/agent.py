@@ -6,18 +6,28 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import requests
 
 from thandv.config import OLLAMA_HOST, Config
 from thandv.memory import append_event, load_memory, load_skills, new_session_path
 from thandv.personas import Persona, get_persona
-from thandv.tools import TOOL_SCHEMAS, TOOLS, dispatch
+from thandv.tools import GATED_TOOLS, TOOL_SCHEMAS, TOOLS, describe, dispatch
 
 TOOL_BLOCK_RE = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
 TOOL_OPEN_MARKER = "```tool\n"
 MAX_TOOL_HOPS = 8
+
+# Asked before every side-effecting tool call: (tool name, summary shown to
+# the person) -> True to run it. Supplied by the CLI, never by the model.
+Approver = Callable[[str, str], bool]
+
+DENIED_BY_USER = "denied by user"
+DENIED_NO_APPROVER = (
+    "denied: side-effecting tools need the user's approval and none is available "
+    "in this mode"
+)
 
 
 @dataclass
@@ -26,6 +36,10 @@ class Agent:
     persona: Persona | None = None
     messages: list[dict] = field(default_factory=list)
     session_path: Path = field(default_factory=new_session_path)
+    # None means no one can approve, so every gated tool is denied.
+    approve: Approver | None = None
+    # Writes are confined to this directory; run_bash runs in it.
+    root: Path = field(default_factory=lambda: Path.cwd().resolve())
 
     def __post_init__(self) -> None:
         if self.persona is None:
@@ -103,7 +117,7 @@ class Agent:
         so we inject it for the `retrieve` tool. The model can still override
         by passing `persona="all"` or a specific name explicitly.
         """
-        if call["name"] == "retrieve":
+        if call["name"] == "retrieve" and isinstance(call["args"], dict):
             call["args"].setdefault("persona", self.persona.name if self.persona else "all")
 
     @staticmethod
@@ -115,10 +129,13 @@ class Agent:
             call = json.loads(m.group(1))
         except json.JSONDecodeError:
             return None
-        if not isinstance(call, dict) or "name" not in call:
+        if not isinstance(call, dict):
             return None
-        call.setdefault("args", {})
-        return call
+        name = call.get("name")
+        args = call.get("args", {})
+        if not isinstance(name, str) or not name or not isinstance(args, dict):
+            return None
+        return {"name": name, "args": args}
 
     @staticmethod
     def _extract_inline_json_tool_call(text: str) -> dict | None:
@@ -180,6 +197,27 @@ class Agent:
         if not isinstance(args, dict):
             return None
         return {"name": name, "args": args}
+
+    def _gate(self, call: dict) -> dict | None:
+        """Ask the person before a side-effecting tool runs.
+
+        Returns None when the call may be dispatched, otherwise the result to
+        hand back to the model instead. Ungated (read-only) and unknown tools
+        pass straight through; dispatch handles the latter.
+        """
+        name = call["name"]
+        if name not in GATED_TOOLS:
+            return None
+        preview = describe(name, call["args"], self.root)
+        if "error" in preview:
+            return {"error": preview["error"]}
+        if self.approve is None:
+            return {"error": DENIED_NO_APPROVER}
+        try:
+            approved = self.approve(name, preview["summary"]) is True
+        except Exception:
+            approved = False
+        return None if approved else {"error": DENIED_BY_USER}
 
     # --- Public turn API ---------------------------------------------------
 
@@ -295,7 +333,11 @@ class Agent:
             last_call = call
 
             yield f"\n[tool] {call['name']}({json.dumps(call['args'])[:120]})\n"
-            result = dispatch(call["name"], call["args"])
+            result = self._gate(call)
+            if result is None:
+                result = dispatch(call["name"], call["args"], root=self.root)
+            elif result.get("error") in (DENIED_BY_USER, DENIED_NO_APPROVER):
+                yield f"[tool {result['error']}]\n"
             append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})
             # Native function-calling expects role="tool" with the result
             # as plain content. This is the OpenAI / Ollama contract and
