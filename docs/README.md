@@ -13,8 +13,8 @@ If you're new, read them in this order:
 2. **[ARCHITECTURE.md](ARCHITECTURE.md)** — what the modules are and how
    they fit together. Storage layout. Key design decisions.
 3. **[TRAINING.md](TRAINING.md)** — the training pipeline, the background
-   daemon (`thandv train`), launchd / systemd setup, what's stubbed vs
-   real today.
+   daemon (`thandv train`), launchd / systemd setup, and what is
+   implemented vs. not yet run end to end.
 4. **[DEVELOPMENT.md](DEVELOPMENT.md)** — dev environment, tests, CI, PR
    workflow, and how to add a new persona / eval suite / tool.
 

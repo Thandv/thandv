@@ -357,7 +357,7 @@ Everything user-side lives under `~/.thandv/`:
 └── training/
     ├── queue/               # JSONL files awaiting training
     ├── processed/           # consumed queue files (audit trail)
-    ├── adapters/            # adapter markers (stubbed today; safetensors at v0.4)
+    ├── adapters/            # one dir per trained adapter: adapter/, merged.gguf, Modelfile
     ├── logs/                # tick logs (one JSON per tick)
     ├── state.json           # TrainerState
     └── trainer.pid          # daemon PID when running

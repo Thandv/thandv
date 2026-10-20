@@ -12,6 +12,20 @@ def test_version_flag(capsys):
     assert __version__ in out
 
 
+def test_version_matches_pyproject_and_is_current(capsys):
+    """pyproject.toml and thandv.__version__ carry the version in two places
+    (a plain string, not package metadata); they must agree."""
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    declared = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE).group(1)
+    assert declared == __version__ == "0.10.0"
+    with pytest.raises(SystemExit):
+        main(["--version"])
+    assert capsys.readouterr().out.strip() == "thandv 0.10.0"
+
+
 def test_help_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--help"])

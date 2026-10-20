@@ -13,17 +13,19 @@ the only kind of self-improvement that actually works.
 
 ## State of the trainer
 
-| Component                   | Today (v0.4.1)                       |
+| Component                   | Today (v0.10)                        |
 |-----------------------------|--------------------------------------|
 | Queue management            | ✅ JSONL files in `queue/`            |
 | Eval gate                   | ✅ smoke suite (configurable later)  |
-| Adapter promote / discard   | ✅ real GGUF + Ollama registration   |
-| **Actual LoRA training**    | ✅ real (MLX-LM on M-series; HF+PEFT fallback stubbed for now) |
+| Adapter promote / discard   | implemented: GGUF + Ollama registration (not yet run end to end) |
+| **Actual LoRA training**    | implemented, not yet run end to end (MLX-LM on M-series; HF+PEFT fallback not implemented) |
 | Daemon control              | ✅ run / stop / pause / resume / status |
 | launchd / systemd templates | ✅ provided                           |
 
-**What's real.** The orchestration *and* the inner training step both
-work. A tick now downloads (on first run) the HF base model, trains a
+**What's implemented.** The orchestration *and* the inner training step
+are implemented and covered by tests that mock the backend, Ollama and
+the downloads. The full path has **not yet been run end to end on real
+hardware**, so treat the first real run as a test. A tick downloads (on first run) the HF base model, trains a
 LoRA adapter via MLX-LM, merges + exports a GGUF via `mlx_lm fuse
 --export-gguf`, registers the new model in Ollama as
 `thandv-adapter-<ts>`, runs the eval gate against the new model, and
@@ -45,7 +47,7 @@ per small adapter. If you hit OOM, drop to a smaller training base via
 │  user sessions)│                                  │
 └────────────────┘                                  ▼
                                           ┌─────────────────┐
-                                          │   stub_train    │── adapter id
+                                          │   _train_lora   │── adapter id
                                           └────────┬────────┘
                                                    ▼
                                           ┌─────────────────┐
@@ -292,4 +294,4 @@ foreground.
   for *why* this pipeline is shaped the way it is and what its limits
   are.
 - [`../research/ROADMAP.md`](../research/ROADMAP.md) for the path from
-  the v0.2 stub to a real v0.4 trainer and beyond.
+  the v0.2 stub to the v0.4 trainer and beyond.
