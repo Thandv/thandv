@@ -1297,6 +1297,82 @@ def test_stream_turn_works_off_the_main_thread():
     assert result == [0]
 
 
+def test_ctrl_c_while_the_latch_comes_down_still_restores_the_handler(monkeypatch):
+    """A Ctrl-C landing as a finished turn removes the latch is ignored. If it
+    raised before the default handler was back, a fired latch would stay
+    installed and Ctrl-C would be dead for the rest of the session."""
+    import signal
+
+    from thandv import cli
+
+    real_getsignal = signal.getsignal
+    finished = []
+
+    def ctrl_c_during_removal(signum):
+        current = real_getsignal(signum)
+        if finished and callable(current) and current is not signal.default_int_handler:
+            current(signum, None)  # Ctrl-C as the latch is checked for removal
+        return current
+
+    class FakeAgent:
+        def turn(self, prompt):
+            yield "x"
+            finished.append(True)
+
+    monkeypatch.setattr(cli.signal, "getsignal", ctrl_c_during_removal)
+    try:
+        assert cli._stream_turn(FakeAgent(), "p") == 0
+        assert real_getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def test_latch_removal_leaves_a_handler_set_during_the_turn_alone():
+    """The latch only removes its own handler, never one installed after it."""
+    import signal
+
+    from thandv import cli
+
+    def own(signum, frame):
+        pass
+
+    class FakeAgent:
+        def turn(self, prompt):
+            signal.signal(signal.SIGINT, own)
+            yield "x"
+
+    try:
+        assert cli._stream_turn(FakeAgent(), "p") == 0
+        assert signal.getsignal(signal.SIGINT) is own
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def test_ctrl_c_while_the_user_message_is_logged_marks_the_turn_interrupted(
+    thandv_home, monkeypatch, tmp_path
+):
+    """The user message is recorded inside the turn's try, so a Ctrl-C while
+    it is written still leaves the interrupted marker in the session log."""
+    from thandv import agent as agent_mod
+    from thandv import cli
+
+    agent, spawned, _ = _streaming_agent(monkeypatch, tmp_path, [["never streamed"]])
+    real = agent_mod.append_event
+    calls = []
+
+    def interrupt_first(path, event):
+        calls.append(event)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        real(path, event)
+
+    monkeypatch.setattr(agent_mod, "append_event", interrupt_first)
+    assert cli._stream_turn(agent, "question") == 130
+    assert calls[0]["role"] == "user"
+    assert _session_events(agent) == [{"role": "interrupted", "partial": ""}]
+    assert spawned == []
+
+
 def test_ctrl_c_at_approval_in_the_repl_returns_to_the_prompt(thandv_home, monkeypatch, capsys):
     from thandv import agent as agent_mod
 
