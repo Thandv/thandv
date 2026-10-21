@@ -98,6 +98,17 @@ turn (writes stay confined). `--allow-tools` is rejected without a
 
 Inside the REPL: `/exit` or `/quit` (or Ctrl-D) to leave.
 
+**Ctrl-C** while a reply is streaming, or at the `Allow <tool>?` question,
+stops that reply and returns you to the `>` prompt; the session carries on.
+At the approval question Ctrl-C is a no: the tool does not run, and the
+model is told it was interrupted. Ctrl-C while an approved command runs
+kills the command's process group (a helper that detaches into its own
+session survives). A second Ctrl-C while the
+first is being handled is ignored. With a one-shot `PROMPT`, Ctrl-C exits
+with status 130. The session log marks the cut-off reply as
+`{"role": "interrupted"}`, so `thandv train promote-session` never turns
+it into training data. Ctrl-C at the empty `>` prompt leaves the REPL.
+
 Sessions are logged as JSONL under `~/.thandv/sessions/<unix-ts>.jsonl`.
 
 ### `thandv doctor`
@@ -347,7 +358,7 @@ Everything user-side lives under `~/.thandv/`:
 └── training/
     ├── queue/               # JSONL files awaiting training
     ├── processed/           # consumed queue files (audit trail)
-    ├── adapters/            # adapter markers (stubbed today; safetensors at v0.4)
+    ├── adapters/            # one dir per trained adapter: adapter/, merged.gguf, Modelfile
     ├── logs/                # tick logs (one JSON per tick)
     ├── state.json           # TrainerState
     └── trainer.pid          # daemon PID when running

@@ -12,6 +12,20 @@ def test_version_flag(capsys):
     assert __version__ in out
 
 
+def test_version_matches_pyproject_and_is_current(capsys):
+    """pyproject.toml and thandv.__version__ carry the version in two places
+    (a plain string, not package metadata); they must agree."""
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    declared = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE).group(1)
+    assert declared == __version__ == "0.10.0"
+    with pytest.raises(SystemExit):
+        main(["--version"])
+    assert capsys.readouterr().out.strip() == "thandv 0.10.0"
+
+
 def test_help_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
@@ -944,6 +958,488 @@ def test_chat_ctrl_c_interrupts_reply_not_session(thandv_home, monkeypatch, caps
     out = capsys.readouterr().out
     assert "[interrupted]" in out
     assert "ok" in out
+
+
+# --- Ctrl-C during a streaming turn -------------------------------------------
+#
+# No test here reaches a model or a shell: the turn is a fake generator, or a
+# real Agent whose `_raw_stream` is replaced and whose tools are recorders.
+
+
+def test_chat_one_shot_ctrl_c_exits_130_without_traceback(thandv_home, monkeypatch, capsys):
+    def turn(self, prompt):
+        yield "start..."
+        raise KeyboardInterrupt
+
+    _chat_ready(monkeypatch, turn)
+    rc = main(["chat", "--persona", "code", "hi"])
+    assert rc == 130
+    captured = capsys.readouterr()
+    assert "[interrupted]" in captured.out
+    assert "Traceback" not in captured.out + captured.err
+
+
+def test_stream_turn_closes_the_turn_when_ctrl_c_lands_between_chunks(monkeypatch, capsys):
+    """Ctrl-C while a chunk is being printed leaves the generator suspended at
+    a yield. It must be closed right away (running its cleanup), not whenever
+    the last reference to it happens to go."""
+    from thandv import cli
+
+    cleaned = []
+    made = []  # keeps a reference, as a caller holding the generator would
+
+    def turn(prompt):
+        try:
+            yield "one"
+            yield "two"
+        finally:
+            cleaned.append(prompt)
+
+    class FakeAgent:
+        def turn(self, prompt):
+            gen = turn(prompt)
+            made.append(gen)
+            return gen
+
+    def interrupt_on_print(text):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_for_terminal", interrupt_on_print)
+    assert cli._stream_turn(FakeAgent(), "p") == 130
+    assert cleaned == ["p"]
+    assert "[interrupted]" in capsys.readouterr().out
+
+
+def _streaming_agent(monkeypatch, tmp_path, replies, approve=None):
+    """A real Agent whose model replies are scripted, one list of chunks per
+    hop. `closed` records every model stream that was closed."""
+    import subprocess
+
+    from thandv import tools
+    from thandv.agent import Agent
+    from thandv.config import Config
+
+    spawned = []
+
+    def fake_run_with_timeout(args, **kwargs):
+        spawned.append(args)
+        return subprocess.CompletedProcess(args, 0, "fake-out\n", "")
+
+    monkeypatch.setattr(tools, "run_with_timeout", fake_run_with_timeout)
+    agent = Agent(config=Config(model="fake-model"), approve=approve, root=tmp_path.resolve())
+    hops = iter(replies)
+    closed = []
+    streams = []  # held, so only an explicit close() closes a stream
+
+    def chunks():
+        try:
+            yield from next(hops)
+        finally:
+            closed.append(True)
+
+    def raw_stream():
+        stream = chunks()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(agent, "_raw_stream", raw_stream)
+    return agent, spawned, closed
+
+
+def _session_events(agent):
+    import json
+
+    return [json.loads(line) for line in agent.session_path.read_text().splitlines()]
+
+
+def _tool_block(name, args):
+    import json
+
+    return "```tool\n" + json.dumps({"name": name, "args": args}) + "\n```"
+
+
+def test_ctrl_c_mid_reply_records_partial_reply_and_keeps_session_usable(
+    thandv_home, monkeypatch, tmp_path, capsys
+):
+    from thandv import cli
+
+    agent, _, closed = _streaming_agent(
+        monkeypatch, tmp_path,
+        [["Hello there, ", "this is a long ", "reply that never ends"], ["fine"]],
+    )
+    real = cli._for_terminal
+    seen = []
+
+    def interrupt_on_second_chunk(text):
+        seen.append(text)
+        if len(seen) == 2:
+            raise KeyboardInterrupt
+        return real(text)
+
+    monkeypatch.setattr(cli, "_for_terminal", interrupt_on_second_chunk)
+    assert cli._stream_turn(agent, "first") == 130
+    assert closed == [True]  # the model stream (HTTP response) was closed
+    # The partial reply is kept in the context so roles still alternate...
+    assert agent.messages[-2:] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "Hello there, this is a long "},
+    ]
+    # ...but logged as an interruption, not as an assistant answer that the
+    # session-promotion step would turn into training data.
+    events = _session_events(agent)
+    assert events[-1] == {"role": "interrupted", "partial": "Hello there, this is a long "}
+    assert [e["role"] for e in events] == ["user", "interrupted"]
+
+    monkeypatch.setattr(cli, "_for_terminal", real)
+    assert cli._stream_turn(agent, "second") == 0
+    assert agent.messages[-1] == {"role": "assistant", "content": "fine"}
+    assert "fine" in capsys.readouterr().out
+
+
+def test_interrupted_reply_is_not_promoted_to_training_data(thandv_home, monkeypatch, tmp_path):
+    from thandv import cli, session_promotion
+
+    agent, _, _ = _streaming_agent(monkeypatch, tmp_path, [["partial answer ", "more"]])
+
+    def interrupt(text):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_for_terminal", interrupt)
+    cli._stream_turn(agent, "question")
+    events = _session_events(agent)
+    assert events[-1] == {"role": "interrupted", "partial": "partial answer "}
+    assert session_promotion.extract_pairs(agent.session_path) == []
+
+
+class _Tty:
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        raise OSError("not a real fd")
+
+
+@pytest.mark.parametrize("where", ["preview", "flush", "input", "full-view"])
+def test_ctrl_c_anywhere_in_the_approval_prompt_denies_and_ends_the_reply(
+    thandv_home, monkeypatch, tmp_path, capsys, where
+):
+    from thandv import cli
+    from thandv.agent import INTERRUPTED_NOT_RUN
+
+    agent, spawned, _ = _streaming_agent(
+        monkeypatch, tmp_path,
+        [[_tool_block("run_bash", {"command": "echo hi"})], ["after"]],
+        approve=cli._repl_approver,
+    )
+    monkeypatch.setattr("sys.stdin", _Tty())
+
+    def boom(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    answers = iter(["f"])
+
+    def full_view_then_ctrl_c(prompt=""):
+        for answer in answers:
+            return answer
+        raise KeyboardInterrupt
+
+    if where == "preview":
+        monkeypatch.setattr(cli, "_approval_preview", boom)
+    elif where == "flush":
+        monkeypatch.setattr(cli, "_flush_typeahead", boom)
+    elif where == "input":
+        monkeypatch.setattr("builtins.input", boom)
+    else:  # Ctrl-C at the second question, after asking for the full view
+        monkeypatch.setattr(cli, "_approval_preview", lambda s, cols: (s.splitlines(), 5))
+        monkeypatch.setattr("builtins.input", full_view_then_ctrl_c)
+    assert cli._stream_turn(agent, "say hi") == 130
+    assert spawned == []
+    tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert tool_msgs == [
+        {"role": "tool", "name": "run_bash", "content": '{"error": "%s"}' % INTERRUPTED_NOT_RUN}
+    ]
+    # The tool-call reply is in the history once, followed by its result.
+    assert [m["role"] for m in agent.messages[-3:]] == ["user", "assistant", "tool"]
+    events = _session_events(agent)
+    assert events[-2:] == [
+        {"role": "tool", "name": "run_bash", "result": {"error": INTERRUPTED_NOT_RUN}},
+        {"role": "interrupted", "partial": ""},
+    ]
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out and "after" not in out
+
+
+def test_ctrl_c_while_the_tool_line_prints_does_not_run_the_tool(
+    thandv_home, monkeypatch, tmp_path
+):
+    from thandv import cli
+    from thandv.agent import INTERRUPTED_NOT_RUN
+
+    asked = []
+    agent, spawned, _ = _streaming_agent(
+        monkeypatch, tmp_path,
+        [[_tool_block("run_bash", {"command": "echo hi"})], ["after"]],
+        approve=lambda name, summary: asked.append(name) or True,
+    )
+    real = cli._for_terminal
+
+    def interrupt_on_tool_line(text):
+        if text.lstrip().startswith("[tool]"):
+            raise KeyboardInterrupt
+        return real(text)
+
+    monkeypatch.setattr(cli, "_for_terminal", interrupt_on_tool_line)
+    assert cli._stream_turn(agent, "say hi") == 130
+    assert asked == [] and spawned == []
+    assert agent.messages[-1]["content"] == '{"error": "%s"}' % INTERRUPTED_NOT_RUN
+
+
+def test_ctrl_c_while_a_tool_runs_is_recorded_as_maybe_partly_run(
+    thandv_home, monkeypatch, tmp_path
+):
+    from thandv import cli, tools
+    from thandv.agent import INTERRUPTED_RUNNING
+
+    agent, _, _ = _streaming_agent(
+        monkeypatch, tmp_path,
+        [[_tool_block("run_bash", {"command": "make"})], ["after"]],
+        approve=lambda name, summary: True,
+    )
+
+    def interrupted_run(args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tools, "run_with_timeout", interrupted_run)
+    assert cli._stream_turn(agent, "build") == 130
+    assert agent.messages[-1] == {
+        "role": "tool", "name": "run_bash", "content": '{"error": "%s"}' % INTERRUPTED_RUNNING
+    }
+
+
+def test_ctrl_c_after_a_finished_tool_adds_no_second_result(thandv_home, monkeypatch, tmp_path):
+    """The tool ran and its result is recorded; Ctrl-C in the next hop's
+    stream must not add a bogus 'interrupted' result for it."""
+    from thandv import cli
+
+    agent, spawned, _ = _streaming_agent(
+        monkeypatch, tmp_path,
+        [[_tool_block("run_bash", {"command": "echo hi"})], ["Now the long ", "answer follows"]],
+        approve=lambda name, summary: True,
+    )
+    real = cli._for_terminal
+
+    def interrupt_on_answer(text):
+        if "Now" in text:
+            raise KeyboardInterrupt
+        return real(text)
+
+    monkeypatch.setattr(cli, "_for_terminal", interrupt_on_answer)
+    assert cli._stream_turn(agent, "say hi") == 130
+    assert spawned == ["echo hi"]
+    tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 1 and '"exit": 0' in tool_msgs[0]["content"]
+    assert agent.messages[-1] == {"role": "assistant", "content": "Now the long "}
+
+
+def test_record_interrupt_skips_a_result_already_in_history(thandv_home, tmp_path):
+    from thandv.agent import Agent, _TurnProgress
+    from thandv.config import Config
+
+    agent = Agent(config=Config(model="fake-model"), root=tmp_path.resolve())
+    agent.messages.append({"role": "tool", "name": "run_bash", "content": '{"exit": 0}'})
+    agent._record_interrupt(_TurnProgress(call={"name": "run_bash", "args": {}}, dispatching=True))
+    assert [m["role"] for m in agent.messages].count("tool") == 1
+    assert _session_events(agent) == [{"role": "interrupted", "partial": ""}]
+
+
+def test_ctrl_c_while_the_latch_goes_up_still_restores_the_handler(monkeypatch, capsys):
+    import signal
+
+    from thandv import cli
+
+    real_signal = signal.signal
+
+    def ctrl_c_right_after_install(signum, handler):
+        previous = real_signal(signum, handler)
+        if handler is not signal.default_int_handler:
+            handler(signum, None)  # Ctrl-C before the turn starts
+        return previous
+
+    started = []
+
+    class FakeAgent:
+        def turn(self, prompt):
+            started.append(prompt)
+            yield "x"
+
+    monkeypatch.setattr(cli.signal, "signal", ctrl_c_right_after_install)
+    assert cli._stream_turn(FakeAgent(), "p") == 130
+    assert started == []
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    assert "[interrupted]" in capsys.readouterr().out
+
+
+def test_stream_turn_works_off_the_main_thread():
+    """Signal handlers can only be set in the main thread; elsewhere the
+    turn runs without the latch instead of failing."""
+    import threading
+
+    from thandv import cli
+
+    class FakeAgent:
+        def turn(self, prompt):
+            yield "x"
+
+    result = []
+    worker = threading.Thread(target=lambda: result.append(cli._stream_turn(FakeAgent(), "p")))
+    worker.start()
+    worker.join()
+    assert result == [0]
+
+
+def test_ctrl_c_while_the_latch_comes_down_still_restores_the_handler(monkeypatch):
+    """A Ctrl-C landing as a finished turn removes the latch is ignored. If it
+    raised before the default handler was back, a fired latch would stay
+    installed and Ctrl-C would be dead for the rest of the session."""
+    import signal
+
+    from thandv import cli
+
+    real_getsignal = signal.getsignal
+    finished = []
+
+    def ctrl_c_during_removal(signum):
+        current = real_getsignal(signum)
+        if finished and callable(current) and current is not signal.default_int_handler:
+            current(signum, None)  # Ctrl-C as the latch is checked for removal
+        return current
+
+    class FakeAgent:
+        def turn(self, prompt):
+            yield "x"
+            finished.append(True)
+
+    monkeypatch.setattr(cli.signal, "getsignal", ctrl_c_during_removal)
+    try:
+        assert cli._stream_turn(FakeAgent(), "p") == 0
+        assert real_getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def test_latch_removal_leaves_a_handler_set_during_the_turn_alone():
+    """The latch only removes its own handler, never one installed after it."""
+    import signal
+
+    from thandv import cli
+
+    def own(signum, frame):
+        pass
+
+    class FakeAgent:
+        def turn(self, prompt):
+            signal.signal(signal.SIGINT, own)
+            yield "x"
+
+    try:
+        assert cli._stream_turn(FakeAgent(), "p") == 0
+        assert signal.getsignal(signal.SIGINT) is own
+    finally:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def test_ctrl_c_while_the_user_message_is_logged_marks_the_turn_interrupted(
+    thandv_home, monkeypatch, tmp_path
+):
+    """The user message is recorded inside the turn's try, so a Ctrl-C while
+    it is written still leaves the interrupted marker in the session log."""
+    from thandv import agent as agent_mod
+    from thandv import cli
+
+    agent, spawned, _ = _streaming_agent(monkeypatch, tmp_path, [["never streamed"]])
+    real = agent_mod.append_event
+    calls = []
+
+    def interrupt_first(path, event):
+        calls.append(event)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        real(path, event)
+
+    monkeypatch.setattr(agent_mod, "append_event", interrupt_first)
+    assert cli._stream_turn(agent, "question") == 130
+    assert calls[0]["role"] == "user"
+    assert _session_events(agent) == [{"role": "interrupted", "partial": ""}]
+    assert spawned == []
+
+
+def test_ctrl_c_at_approval_in_the_repl_returns_to_the_prompt(thandv_home, monkeypatch, capsys):
+    from thandv import agent as agent_mod
+
+    _chat_ready(monkeypatch, agent_mod.Agent.turn)
+    hops = iter([[_tool_block("run_bash", {"command": "echo hi"})], ["second reply"]])
+    monkeypatch.setattr(agent_mod.Agent, "_raw_stream", lambda self: iter(next(hops)))
+    monkeypatch.setattr("sys.stdin", _Tty())
+    lines = iter(["first", None, "second", "/exit"])  # None: Ctrl-C at y/N
+
+    def fake_input(prompt=""):
+        line = next(lines)
+        if line is None:
+            raise KeyboardInterrupt
+        return line
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    assert main(["chat", "--persona", "code"]) == 0
+    out = capsys.readouterr().out
+    assert "[interrupted]" in out and "second reply" in out
+
+
+def test_second_ctrl_c_during_cleanup_is_ignored(monkeypatch, capsys):
+    """A second Ctrl-C while the interrupted turn cleans up must not cut the
+    cleanup short or escape as a traceback; the handler is restored after."""
+    import os
+    import signal
+
+    from thandv import cli
+
+    cleaned = []
+
+    class FakeAgent:
+        def turn(self, prompt):
+            try:
+                yield "partial"
+                os.kill(os.getpid(), signal.SIGINT)  # first Ctrl-C
+                yield "never"
+            finally:
+                os.kill(os.getpid(), signal.SIGINT)  # second Ctrl-C, mid-cleanup
+                cleaned.append(True)
+
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    assert cli._stream_turn(FakeAgent(), "p") == 130
+    assert cleaned == [True]
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    assert "[interrupted]" in capsys.readouterr().out
+
+
+def test_stream_turn_leaves_an_ignored_sigint_alone(monkeypatch):
+    """If Ctrl-C is ignored (e.g. started in the background), keep it that way."""
+    import signal
+
+    from thandv import cli
+
+    seen = []
+
+    class FakeAgent:
+        def turn(self, prompt):
+            seen.append(signal.getsignal(signal.SIGINT))
+            yield "x"
+
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        assert cli._stream_turn(FakeAgent(), "p") == 0
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert seen == [signal.SIG_IGN]
 
 
 @pytest.mark.parametrize(

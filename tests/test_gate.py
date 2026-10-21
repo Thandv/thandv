@@ -456,16 +456,29 @@ def test_repl_approver_needs_typed_y(monkeypatch, answer, expected):
     assert cli._repl_approver("run_bash", "run_bash: id") is expected
 
 
-@pytest.mark.parametrize("exc", [EOFError, KeyboardInterrupt])
-def test_repl_approver_eof_or_interrupt_denies(monkeypatch, exc):
+def test_repl_approver_eof_denies(monkeypatch):
     from thandv import cli
 
     def raise_(prompt=""):
-        raise exc
+        raise EOFError
 
     monkeypatch.setattr("sys.stdin", _Stdin(tty=True))
     monkeypatch.setattr("builtins.input", raise_)
     assert cli._repl_approver("run_bash", "x") is False
+
+
+def test_repl_approver_lets_ctrl_c_end_the_turn(monkeypatch):
+    """Ctrl-C is never an approval: it propagates, so the turn records the
+    call as not run and the reply ends (tests/test_cli.py drives the rest)."""
+    from thandv import cli
+
+    def raise_(prompt=""):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("sys.stdin", _Stdin(tty=True))
+    monkeypatch.setattr("builtins.input", raise_)
+    with pytest.raises(KeyboardInterrupt):
+        cli._repl_approver("run_bash", "x")
 
 
 def test_repl_approver_non_tty_denies_without_reading(monkeypatch):
@@ -653,7 +666,7 @@ def test_stream_escapes_surrogates_in_model_text(thandv_home, monkeypatch, tmp_p
     from thandv import cli
 
     agent = _agent(monkeypatch, tmp_path, ["Sure\udcc2\udc9b2J done"], approve=None)
-    assert cli._stream_turn(agent, "x") is True
+    assert cli._stream_turn(agent, "x") == 0
     out = capsys.readouterr().out
     assert "\\udcc2\\udc9b2J" in out
     out.encode("utf-8")
@@ -737,7 +750,7 @@ def test_approval_and_stream_survive_non_utf8_terminal(thandv_home, monkeypatch,
         _ask_once(monkeypatch, answer="y")
         assert cli._repl_approver("write_file", "write_file (new file):\n/r/caf\u00e9\u2192.py") is True
         agent = _agent(monkeypatch, tmp_path, ["arrow \u2192 done"], approve=None)
-        assert cli._stream_turn(agent, "x") is True
+        assert cli._stream_turn(agent, "x") == 0
         sys_out = buf.getvalue()
         assert b"\\u2192" in sys_out
 

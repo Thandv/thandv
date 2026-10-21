@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
@@ -28,6 +29,33 @@ DENIED_NO_APPROVER = (
     "denied: side-effecting tools need the user's approval and none is available "
     "in this mode"
 )
+INTERRUPTED_NOT_RUN = "interrupted by user; the tool was not run"
+INTERRUPTED_RUNNING = "interrupted by user while the tool was running; it may have partly run"
+
+
+@contextmanager
+def _closed_after(stream: Iterator[str]) -> Iterator[Iterator[str]]:
+    """Close the model stream on the way out, so an interrupt releases the
+    HTTP response now rather than whenever the generator is collected. Any
+    plain iterator (no close()) is accepted as is."""
+    try:
+        yield stream
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
+
+
+@dataclass
+class _TurnProgress:
+    """What an interrupted turn has not yet recorded."""
+
+    # Model text of the current hop, before it is added to the history.
+    partial: str = ""
+    # A requested tool call whose result is not yet in the history.
+    call: dict | None = None
+    # True once that call was handed to `dispatch`.
+    dispatching: bool = False
 
 
 @dataclass
@@ -228,9 +256,37 @@ class Agent:
         `[tool] <name>(<args>)` summary instead. A small tail buffer ensures
         the `TOOL_OPEN_MARKER` is detected even when it straddles two chunks.
         """
-        self.messages.append({"role": "user", "content": user_input})
-        append_event(self.session_path, {"role": "user", "content": user_input})
+        progress = _TurnProgress()
+        try:
+            self.messages.append({"role": "user", "content": user_input})
+            append_event(self.session_path, {"role": "user", "content": user_input})
+            yield from self._hops(progress)
+        except (KeyboardInterrupt, GeneratorExit):
+            # Ctrl-C inside the turn, or the caller closing it mid-stream.
+            self._record_interrupt(progress)
+            raise
 
+    def _record_interrupt(self, progress: _TurnProgress) -> None:
+        """Leave the history and the session log consistent after Ctrl-C.
+
+        The partial reply stays in the history so roles keep alternating, and
+        a requested tool call gets a result, as the chat contract requires.
+        The log marks the reply as interrupted rather than as an assistant
+        answer, so session promotion never trains on a cut-off reply.
+        """
+        if progress.partial:
+            self.messages.append({"role": "assistant", "content": progress.partial})
+        # A result already in the history (Ctrl-C right after it was added)
+        # must not get a second one.
+        result_recorded = bool(self.messages) and self.messages[-1]["role"] == "tool"
+        if progress.call is not None and not result_recorded:
+            name = progress.call["name"]
+            error = INTERRUPTED_RUNNING if progress.dispatching else INTERRUPTED_NOT_RUN
+            self.messages.append({"role": "tool", "name": name, "content": json.dumps({"error": error})})
+            append_event(self.session_path, {"role": "tool", "name": name, "result": {"error": error}})
+        append_event(self.session_path, {"role": "interrupted", "partial": progress.partial})
+
+    def _hops(self, progress: _TurnProgress) -> Iterator[str]:
         hold = len(TOOL_OPEN_MARKER) - 1  # bytes to keep buffered for marker detection
 
         last_call: dict | None = None
@@ -244,38 +300,40 @@ class Agent:
             mode_decided = False
             self._pending_tool_calls = []
 
-            for chunk in self._raw_stream():
-                full += chunk
-                if in_tool_block or json_buffer_mode:
-                    continue
-
-                if not mode_decided:
-                    stripped = full.lstrip()
-                    if not stripped:
-                        continue  # only whitespace so far
-                    if stripped.startswith("{"):
-                        # Model is producing raw-JSON content. Buffer the
-                        # whole reply; we'll decide at end-of-stream whether
-                        # it's an inline tool call (suppress) or legitimate
-                        # JSON output (yield once).
-                        json_buffer_mode = True
+            with _closed_after(self._raw_stream()) as stream:
+                for chunk in stream:
+                    full += chunk
+                    progress.partial = full
+                    if in_tool_block or json_buffer_mode:
                         continue
-                    mode_decided = True
-                    pending = full  # flush whatever leading whitespace existed
-                else:
-                    pending += chunk
 
-                idx = pending.find(TOOL_OPEN_MARKER)
-                if idx >= 0:
-                    if idx > 0:
-                        yield pending[:idx]
-                    block_start = len(full) - len(pending) + idx
-                    pending = ""
-                    in_tool_block = True
-                    continue
-                if len(pending) > hold:
-                    yield pending[:-hold]
-                    pending = pending[-hold:]
+                    if not mode_decided:
+                        stripped = full.lstrip()
+                        if not stripped:
+                            continue  # only whitespace so far
+                        if stripped.startswith("{"):
+                            # Model is producing raw-JSON content. Buffer the
+                            # whole reply; we'll decide at end-of-stream whether
+                            # it's an inline tool call (suppress) or legitimate
+                            # JSON output (yield once).
+                            json_buffer_mode = True
+                            continue
+                        mode_decided = True
+                        pending = full  # flush whatever leading whitespace existed
+                    else:
+                        pending += chunk
+
+                    idx = pending.find(TOOL_OPEN_MARKER)
+                    if idx >= 0:
+                        if idx > 0:
+                            yield pending[:idx]
+                        block_start = len(full) - len(pending) + idx
+                        pending = ""
+                        in_tool_block = True
+                        continue
+                    if len(pending) > hold:
+                        yield pending[:-hold]
+                        pending = pending[-hold:]
 
             if json_buffer_mode:
                 # If the buffered content is a real inline tool call, suppress
@@ -307,6 +365,7 @@ class Agent:
                 ]
             self.messages.append(assistant_msg)
             append_event(self.session_path, {"role": "assistant", "content": full})
+            progress.partial = ""
 
             if call is None:
                 call = self._extract_tool_call(full)
@@ -331,13 +390,14 @@ class Agent:
                 yield "\n[stopped: model is repeating the same tool call]\n"
                 return
             last_call = call
+            progress.call = call
 
             yield f"\n[tool] {call['name']}({json.dumps(call['args'])[:120]})\n"
             result = self._gate(call)
+            denied = result is not None and result.get("error") in (DENIED_BY_USER, DENIED_NO_APPROVER)
             if result is None:
+                progress.dispatching = True
                 result = dispatch(call["name"], call["args"], root=self.root)
-            elif result.get("error") in (DENIED_BY_USER, DENIED_NO_APPROVER):
-                yield f"[tool {result['error']}]\n"
             append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})
             # Native function-calling expects role="tool" with the result
             # as plain content. This is the OpenAI / Ollama contract and
@@ -346,5 +406,9 @@ class Agent:
             self.messages.append(
                 {"role": "tool", "name": call["name"], "content": json.dumps(result)[:8000]}
             )
+            progress.call = None
+            progress.dispatching = False
+            if denied:
+                yield f"[tool {result['error']}]\n"
 
         yield "[stopped: tool-call budget exhausted]\n"

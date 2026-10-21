@@ -6,6 +6,7 @@ The agent already records every chat session as JSONL under
   {"role": "user",      "content": "..."}              # user typed
   {"role": "assistant", "content": "...streamed..."}   # model's full reply
   {"role": "tool",      "name": "...", "result": {...}}# tool dispatch result
+  {"role": "interrupted", "partial": "..."}           # Ctrl-C cut the reply; never paired
 
 Session promotion walks one of these files and turns it into training
 data: every adjacent (user → assistant) pair becomes a `(prompt,

@@ -5,8 +5,10 @@ exploring how far a small, self-hostable agent can be pushed toward
 frontier-model quality through skills, memory, evaluation, and adapter
 fine-tuning of open models — without ever sending a token to a paid API.
 
-> **Status:** v0.2 — usable scaffold with personas, eval harness, and a
-> background training daemon. Not Claude. See
+> **Status:** v0.10 — usable research scaffold: personas, eval harness,
+> local RAG, a human approval gate for tools, and a background training
+> daemon whose MLX-LM → GGUF → Ollama path is implemented but has not yet
+> been run end to end on real hardware. Not Claude. See
 > [`research/SELF_IMPROVEMENT.md`](research/SELF_IMPROVEMENT.md) for the
 > honest gap analysis and the roadmap to close (some of) it.
 >
@@ -17,10 +19,17 @@ fine-tuning of open models — without ever sending a token to a paid API.
 
 - A `thandv` CLI with an agent loop, tool use (`read_file`, `write_file`,
   `edit_file`, `list_dir`, `run_bash`), persistent sessions, a skills
-  directory, and a memory directory. The REPL asks you `y/N` before every
-  shell command, file write or edit, and writes are confined to the
-  directory you started in; a one-shot `thandv chat "..."` denies those
-  tools unless you pass `--allow-tools`.
+  directory, and a memory directory.
+- **Tools need your approval.** `run_bash`, `write_file` and `edit_file`
+  run only after you type `y` (or `yes`) at the REPL's `Allow <tool>? [y/N]`
+  question, which shows the full command or the path and diff; anything
+  else, including Ctrl-C, is a no. A one-shot `thandv chat "..."` has no
+  one to ask, so it denies those three tools unless you pass
+  `--allow-tools`, which approves them for that one prompt
+  (`--allow-tools` is refused in the REPL). Writes are confined to the
+  directory you started `thandv` in, and `run_bash` runs there.
+  `read_file`, `list_dir` and `retrieve` run without asking. Ctrl-C while
+  a reply streams stops that reply and returns you to the prompt.
 - **Personas**: `code` (default), `writer`, `finance`. Same base model,
   different system prompt + skill subset. Switch with `--persona`.
 - **Eval harness**: `thandv eval` runs pluggable suites against the active
@@ -35,8 +44,10 @@ fine-tuning of open models — without ever sending a token to a paid API.
   queue, runs an eval-gated training cycle, and only promotes a new
   adapter if it beats the current best on the chosen suite. Pause,
   resume, and stop are first-class commands. macOS launchd and Linux
-  systemd templates ship in `scripts/`. The inner LoRA step is stubbed
-  in v0.2.x; the orchestration is real. See
+  systemd templates ship in `scripts/`. The training step (MLX-LM LoRA on
+  Apple Silicon → merged GGUF → `ollama create` → eval gate) is
+  implemented and covered by mocked tests, but has not yet been run end
+  to end on real hardware; the HF+PEFT fallback is not implemented. See
   [`docs/TRAINING.md`](docs/TRAINING.md).
 - Hardware-aware model selection: picks the strongest rung of a model
   ladder that fits the host (Apple Silicon, NVIDIA, or CPU): Qwen3-Coder
@@ -44,8 +55,9 @@ fine-tuning of open models — without ever sending a token to a paid API.
 - Streaming output (tool-block JSON hidden from the user stream).
 - One-line install that pulls Ollama and the right model.
 - A PyInstaller build script that produces a single-file `thandv` binary.
-- A parallel C++ track ([`cpp/`](cpp/)) for an eventual native build on top
-  of `llama.cpp`.
+- A design note for an eventual native C++ build on top of `llama.cpp`
+  ([`cpp/`](cpp/), [`research/V1.0_NATIVE.md`](research/V1.0_NATIVE.md)).
+  There is no C++ code yet.
 
 > The `finance` persona is educational and analytical only — see
 > [`NOT_FINANCIAL_ADVICE.md`](NOT_FINANCIAL_ADVICE.md).
@@ -96,7 +108,7 @@ skills/                 seed skills loaded by personas (markdown)
 tests/                  pytest suite (no Ollama needed; all I/O mocked)
 docs/                   user + developer + training docs
 research/               roadmap + self-improvement notes
-cpp/                    native build track (llama.cpp-based, future)
+cpp/                    native-build design note only (no C++ code yet)
 scripts/                launchd plist, systemd unit, distill/eval stubs
 NOT_FINANCIAL_ADVICE.md plain-language statement of the finance persona's scope
 install.sh              one-line installer

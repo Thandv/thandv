@@ -167,8 +167,11 @@ whether a side effect happens.
   a look-alike such as a no-break space cannot disguise what runs. Model
   output itself is printed with the same escaping, and the prompt resets terminal attributes, so a
   reply cannot conceal or forge the real prompt. Anything else — Enter, `n`,
-  EOF, Ctrl-C, an approver that raises — returns
-  `{"error": "denied by user"}` to the model. `read_file`, `list_dir` and
+  EOF, an approver that raises — returns
+  `{"error": "denied by user"}` to the model. Ctrl-C at the question is
+  also a no, and it ends the reply too: the turn records the call as
+  `"interrupted by user; the tool was not run"` and the REPL goes back
+  to its prompt. `read_file`, `list_dir` and
   `retrieve` are ungated (`tools.UNGATED_TOOLS`); an import-time tripwire
   requires every tool to be in exactly one of the two sets.
 - **Who approves.** The approver is a callback on `Agent` set by the
