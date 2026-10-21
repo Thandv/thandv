@@ -11,6 +11,7 @@ import sys
 import unicodedata
 from contextlib import closing, contextmanager
 from pathlib import Path
+from types import FrameType
 from typing import Iterator
 
 import requests
@@ -260,7 +261,7 @@ def _first_ctrl_c_only() -> Iterator[None]:
     """
     fired = False
 
-    def on_sigint(signum, frame) -> None:
+    def on_sigint(signum: int, frame: FrameType | None) -> None:
         nonlocal fired
         if not fired:
             fired = True
@@ -269,15 +270,23 @@ def _first_ctrl_c_only() -> Iterator[None]:
     if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
         yield
         return
+    # Install inside the try, so a Ctrl-C landing right after the install
+    # still restores the default handler instead of leaving a fired latch.
     try:
-        previous = signal.signal(signal.SIGINT, on_sigint)
-    except ValueError:  # not the main thread
-        yield
-        return
-    try:
+        try:
+            signal.signal(signal.SIGINT, on_sigint)
+        except ValueError:  # not the main thread: nothing installed
+            pass
         yield
     finally:
-        signal.signal(signal.SIGINT, previous)
+        fired = True  # ignore Ctrl-C until the default handler is back
+        if signal.getsignal(signal.SIGINT) is on_sigint:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def _interrupted() -> int:
+    print("\n[interrupted]", flush=True)
+    return EXIT_INTERRUPTED
 
 
 def _stream_turn(agent: Agent, prompt: str) -> int:
@@ -290,26 +299,35 @@ def _stream_turn(agent: Agent, prompt: str) -> int:
     the approval prompt, ends the reply, not the session: the turn is closed
     so it records what was cut off and any tool call as not run.
     """
-    with _first_ctrl_c_only():
-        try:
-            with closing(agent.turn(prompt)) as chunks:
-                for chunk in chunks:
-                    # Model text is untrusted: escape control characters so it
-                    # can't hide or forge the approval prompt (SGR conceal,
-                    # cursor moves, alternate screen, OSC clipboard writes).
-                    print(_for_terminal(printable(chunk)), end="", flush=True)
-            print()
-        except KeyboardInterrupt:
-            print("\n[interrupted]", flush=True)
-            return EXIT_INTERRUPTED
-        except (requests.RequestException, RuntimeError) as e:
-            print()
-            print(
-                f"error talking to the model: {e}\n"
-                "Is ollama still running? (`ollama serve`)",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        with _first_ctrl_c_only():
+            return _print_turn(agent, prompt)
+    except KeyboardInterrupt:
+        # Only a Ctrl-C that lands while the latch goes up or comes down
+        # gets here; _print_turn handles the ones during the turn.
+        return _interrupted()
+
+
+def _print_turn(agent: Agent, prompt: str) -> int:
+    """The turn itself, under the Ctrl-C latch (see _stream_turn)."""
+    try:
+        with closing(agent.turn(prompt)) as chunks:
+            for chunk in chunks:
+                # Model text is untrusted: escape control characters so it
+                # can't hide or forge the approval prompt (SGR conceal,
+                # cursor moves, alternate screen, OSC clipboard writes).
+                print(_for_terminal(printable(chunk)), end="", flush=True)
+        print()
+    except KeyboardInterrupt:
+        return _interrupted()
+    except (requests.RequestException, RuntimeError) as e:
+        print()
+        print(
+            f"error talking to the model: {e}\n"
+            "Is ollama still running? (`ollama serve`)",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

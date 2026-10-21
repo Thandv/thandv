@@ -256,10 +256,10 @@ class Agent:
         `[tool] <name>(<args>)` summary instead. A small tail buffer ensures
         the `TOOL_OPEN_MARKER` is detected even when it straddles two chunks.
         """
-        self.messages.append({"role": "user", "content": user_input})
-        append_event(self.session_path, {"role": "user", "content": user_input})
         progress = _TurnProgress()
         try:
+            self.messages.append({"role": "user", "content": user_input})
+            append_event(self.session_path, {"role": "user", "content": user_input})
             yield from self._hops(progress)
         except (KeyboardInterrupt, GeneratorExit):
             # Ctrl-C inside the turn, or the caller closing it mid-stream.
@@ -276,7 +276,10 @@ class Agent:
         """
         if progress.partial:
             self.messages.append({"role": "assistant", "content": progress.partial})
-        if progress.call is not None:
+        # A result already in the history (Ctrl-C right after it was added)
+        # must not get a second one.
+        result_recorded = bool(self.messages) and self.messages[-1]["role"] == "tool"
+        if progress.call is not None and not result_recorded:
             name = progress.call["name"]
             error = INTERRUPTED_RUNNING if progress.dispatching else INTERRUPTED_NOT_RUN
             self.messages.append({"role": "tool", "name": name, "content": json.dumps({"error": error})})
