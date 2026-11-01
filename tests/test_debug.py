@@ -3,12 +3,15 @@ secrets are redacted. The teacher API is mocked; no network."""
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
 import requests
 
-from thandv import debug, runtime, teachers as tch
+from thandv import agent as agent_mod, debug, runtime, teachers as tch
+from thandv.agent import Agent
+from thandv.config import Config
 from thandv.tools import run_with_timeout
 
 SENTINEL = "PROMPT-SENTINEL-7f3a"
@@ -96,6 +99,42 @@ def test_swallowed_error_is_logged(monkeypatch, capsys):
     monkeypatch.setattr(runtime.subprocess, "check_output", missing)
     assert runtime._nvidia_vram_gb() == 0
     assert "nvidia-smi unavailable error=FileNotFoundError" in capsys.readouterr().err
+
+
+class _Stream:
+    def __init__(self, lines):
+        self._lines = [json.dumps(x).encode() for x in lines]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+
+def test_agent_chat_logs_start_and_end_without_prompt(thandv_home, monkeypatch, capsys):
+    monkeypatch.setenv("THANDV_DEBUG", "1")
+    debug.setup_debug()
+    agent = Agent(config=Config(model="m1"))
+    agent.messages.append({"role": "user", "content": SENTINEL})
+    ok = [{"message": {"content": "hi"}, "done": True}]
+    monkeypatch.setattr(agent_mod.requests, "post", lambda *a, **k: _Stream(ok))
+    assert list(agent._raw_stream()) == ["hi"]
+    bad = [{"error": "runner stopped"}]
+    monkeypatch.setattr(agent_mod.requests, "post", lambda *a, **k: _Stream(bad))
+    with pytest.raises(RuntimeError):
+        list(agent._raw_stream())
+    err = capsys.readouterr().err
+    assert "thandv.agent ollama chat start model=m1" in err
+    assert "ollama chat end status=ok model=m1" in err
+    assert "ollama chat end status=error error=RuntimeError model=m1" in err
+    assert SENTINEL not in err
 
 
 def test_secrets_are_redacted(monkeypatch, capsys):

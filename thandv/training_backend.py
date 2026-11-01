@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from thandv.config import THANDV_HOME
 from thandv.debug import log as _root_log, ms_since
 
 log = _root_log.getChild("training")
@@ -46,7 +47,6 @@ def _run(cmd: list[str]) -> None:
         raise
     log.debug("subprocess end status=ok %s ms=%d", what, ms_since(t0))
 
-from thandv.config import THANDV_HOME
 
 TRAINING_DIR = THANDV_HOME / "training"
 BASE_MODELS_DIR = TRAINING_DIR / "base"
