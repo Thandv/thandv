@@ -21,10 +21,14 @@ import os
 import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from thandv import rag
+from thandv.debug import log as _root_log, ms_since
+
+log = _root_log.getChild("tools")
 
 MAX_READ_BYTES = 200_000
 MAX_BASH_SECONDS = 30
@@ -250,6 +254,11 @@ def run_with_timeout(
     Raises `subprocess.TimeoutExpired` on timeout, like `subprocess.run`.
     """
     posix = os.name == "posix"
+    t0 = time.monotonic()
+    # A shell string can hold anything; log only its length.
+    what = (f"argv0=sh chars={len(args)}" if isinstance(args, str)
+            else f"argv0={os.path.basename(str(args[0]))} args={len(args) - 1}")
+    log.debug("subprocess start %s cwd=%s timeout=%s", what, cwd or ".", timeout)
     proc = subprocess.Popen(
         args,
         shell=shell,
@@ -264,18 +273,22 @@ def run_with_timeout(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        log.debug("subprocess end status=timeout %s ms=%d", what, ms_since(t0))
         _kill_group(proc, posix)
         try:
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            pass
+            log.debug("subprocess pipes still open after kill %s", what)
         raise
-    except BaseException:
+    except BaseException as e:
+        log.debug("subprocess end status=error error=%s %s ms=%d", type(e).__name__, what, ms_since(t0))
         # Ctrl-C: the job leads its own session, so the terminal's SIGINT
         # never reached it or its helpers. Kill the group here.
         _kill_group(proc, posix)
         proc.wait()
         raise
+    log.debug("subprocess end status=exit rc=%s %s ms=%d out_bytes=%d err_bytes=%d", proc.returncode,
+              what, ms_since(t0), len(stdout or ""), len(stderr or ""))
     return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 
 
@@ -283,8 +296,8 @@ def _kill_group(proc: subprocess.Popen, posix: bool) -> None:
     if posix:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        except (ProcessLookupError, PermissionError) as e:
+            log.debug("killpg skipped error=%s", type(e).__name__)
     proc.kill()
 
 

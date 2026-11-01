@@ -11,6 +11,10 @@ import platform
 import subprocess
 from dataclasses import dataclass
 
+from thandv.debug import log as _root_log
+
+log = _root_log.getChild("runtime")
+
 
 @dataclass
 class HostProfile:
@@ -32,8 +36,8 @@ def _total_ram_gb() -> int:
                 if line.startswith("MemTotal:"):
                     kb = int(line.split()[1])
                     return int(kb / (1024**2))
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("ram detect failed, assuming 8 GB error=%s", type(e).__name__)
     return 8
 
 
@@ -45,8 +49,8 @@ def _nvidia_vram_gb() -> int:
         ).decode().strip().splitlines()
         if out:
             return max(int(x.strip()) for x in out) // 1024
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("nvidia-smi unavailable error=%s", type(e).__name__)
     return 0
 
 

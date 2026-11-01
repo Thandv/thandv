@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Callable, Iterator
 import requests
 
 from thandv.config import OLLAMA_HOST, Config
+from thandv.debug import log as _root_log, ms_since
 from thandv.memory import append_event, load_memory, load_skills, new_session_path
 from thandv.personas import Persona, get_persona
 from thandv.tools import GATED_TOOLS, TOOL_SCHEMAS, TOOLS, describe, dispatch
@@ -31,6 +33,8 @@ DENIED_NO_APPROVER = (
 )
 INTERRUPTED_NOT_RUN = "interrupted by user; the tool was not run"
 INTERRUPTED_RUNNING = "interrupted by user while the tool was running; it may have partly run"
+
+log = _root_log.getChild("agent")
 
 
 @contextmanager
@@ -106,6 +110,20 @@ class Agent:
         }
         if self.config.auto_tools:
             payload["tools"] = TOOL_SCHEMAS
+        t0, status = time.monotonic(), "closed"
+        log.debug("ollama chat start model=%s messages=%d tools=%s",
+                  self.config.model, len(self.messages), bool(self.config.auto_tools))
+        try:
+            yield from self._stream_body(payload)
+            status = "ok"
+        except Exception as e:
+            status = f"error error={type(e).__name__}"
+            raise
+        finally:
+            log.debug("ollama chat end status=%s model=%s ms=%d",
+                      status, self.config.model, ms_since(t0))
+
+    def _stream_body(self, payload: dict[str, object]) -> Iterator[str]:
         with requests.post(
             f"{OLLAMA_HOST}/api/chat",
             json=payload,
@@ -118,7 +136,8 @@ class Agent:
                     continue
                 try:
                     obj = json.loads(line)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    log.debug("ollama chat skipped a non-JSON line error=%s", e)
                     continue
                 if obj.get("error"):
                     # Ollama reports failures that happen after the HTTP
@@ -243,8 +262,10 @@ class Agent:
             return {"error": DENIED_NO_APPROVER}
         try:
             approved = self.approve(name, preview["summary"]) is True
-        except Exception:
+        except Exception as e:
+            log.debug("approver raised, treating as denied error=%s", type(e).__name__)
             approved = False
+        log.debug("gate tool=%s approved=%s", name, approved)
         return None if approved else {"error": DENIED_BY_USER}
 
     # --- Public turn API ---------------------------------------------------
@@ -387,6 +408,7 @@ class Agent:
             # synthesise tool results into a final answer). Break out
             # rather than chew through the hop budget silently.
             if last_call is not None and call == last_call:
+                log.debug("hop stop reason=repeated_call tool=%s", call["name"])
                 yield "\n[stopped: model is repeating the same tool call]\n"
                 return
             last_call = call
@@ -397,7 +419,10 @@ class Agent:
             denied = result is not None and result.get("error") in (DENIED_BY_USER, DENIED_NO_APPROVER)
             if result is None:
                 progress.dispatching = True
+                t0 = time.monotonic()
                 result = dispatch(call["name"], call["args"], root=self.root)
+                log.debug("tool end name=%s status=%s ms=%d", call["name"],
+                          "error" if "error" in result else "ok", ms_since(t0))
             append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})
             # Native function-calling expects role="tool" with the result
             # as plain content. This is the OpenAI / Ollama contract and
@@ -411,4 +436,5 @@ class Agent:
             if denied:
                 yield f"[tool {result['error']}]\n"
 
+        log.debug("hop stop reason=budget hops=%d", MAX_TOOL_HOPS)
         yield "[stopped: tool-call budget exhausted]\n"

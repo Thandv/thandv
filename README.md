@@ -77,6 +77,12 @@ thandv eval --list     # show available suites and personas
 thandv train status    # show training daemon + queue + eval-gate state
 ```
 
+Debug logs: `THANDV_DEBUG=1 thandv ...` prints `[thandv debug]` lines to stderr
+for model and teacher calls (model, status, duration; never prompts), each
+subprocess (exit code, duration, byte counts), tool approvals and results, and
+errors that are otherwise swallowed. Secrets are redacted. Unset or `0` changes
+nothing.
+
 ## Documentation
 
 | Document | Purpose |
