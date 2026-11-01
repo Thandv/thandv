@@ -21,6 +21,7 @@ from dataclasses import asdict
 from thandv import __version__, rag, trainer
 from thandv.agent import Agent
 from thandv.config import OLLAMA_HOST, Config, ensure_dirs
+from thandv.debug import log as _root_log, setup_debug
 from thandv.evals import (
     EvalResult,
     format_regression_line,
@@ -36,11 +37,16 @@ from thandv.runtime import describe, detect_host, pick_model
 from thandv.tools import printable
 
 
+log = _root_log.getChild("cli")
+
+
 def _check_ollama() -> bool:
     try:
         r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=2)
+        log.debug("ollama tags status=%s", r.status_code)
         return r.status_code == 200
-    except requests.RequestException:
+    except requests.RequestException as e:
+        log.debug("ollama tags status=error error=%s", type(e).__name__)
         return False
 
 
@@ -49,7 +55,8 @@ def _ensure_model(model: str) -> bool:
         r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
         tags = [m["name"] for m in r.json().get("models", [])]
         return any(t.startswith(model) for t in tags)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        log.debug("ollama tags status=error error=%s", type(e).__name__)
         return False
 
 
@@ -131,8 +138,8 @@ def _flush_typeahead(stream) -> None:
         import termios
 
         termios.tcflush(stream.fileno(), termios.TCIFLUSH)
-    except (ImportError, OSError, ValueError, AttributeError):
-        pass
+    except (ImportError, OSError, ValueError, AttributeError) as e:
+        log.debug("typeahead flush skipped error=%s", type(e).__name__)
 
 
 def _repl_approver(name: str, summary: str) -> bool:
@@ -1284,6 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
     p_config.set_defaults(func=cmd_config)
 
     args = parser.parse_args(argv)
+    setup_debug()
     if not getattr(args, "func", None):
         args.cmd = "chat"
         args.prompt = None

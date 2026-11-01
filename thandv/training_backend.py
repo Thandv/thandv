@@ -24,11 +24,29 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from thandv.config import THANDV_HOME
+from thandv.debug import log as _root_log, ms_since
+
+log = _root_log.getChild("training")
+
+
+def _run(cmd: list[str]) -> None:
+    """subprocess.run(cmd, check=True) with a debug line for start and end."""
+    what = f"argv0={Path(cmd[0]).name} args={len(cmd) - 1}"
+    t0 = time.monotonic()
+    log.debug("subprocess start %s", what)
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception as e:
+        log.debug("subprocess end status=error error=%s %s ms=%d", type(e).__name__, what, ms_since(t0))
+        raise
+    log.debug("subprocess end status=ok %s ms=%d", what, ms_since(t0))
+
 
 TRAINING_DIR = THANDV_HOME / "training"
 BASE_MODELS_DIR = TRAINING_DIR / "base"
@@ -151,7 +169,7 @@ class MLXBackend:
             "--batch-size", str(batch_size),
             "--adapter-path", str(adapter_path),
         ]
-        subprocess.run(cmd, check=True)
+        _run(cmd)
 
         return TrainResult(
             adapter_dir=adapter_path,
@@ -184,7 +202,7 @@ class MLXBackend:
             "--adapter-path", str(adapter_dir),
             "--save-path", str(fused_hf_dir),
         ]
-        subprocess.run(fuse_cmd, check=True)
+        _run(fuse_cmd)
 
         # Step 2: HF safetensors → GGUF via llama.cpp's converter.
         llama_cpp = ensure_llama_cpp()
@@ -194,7 +212,7 @@ class MLXBackend:
             str(fused_hf_dir),
             "--outfile", str(out_gguf_path),
         ]
-        subprocess.run(convert_cmd, check=True)
+        _run(convert_cmd)
 
         return out_gguf_path
 
@@ -277,10 +295,7 @@ def ensure_llama_cpp() -> Path:
     if LLAMA_CPP_DIR.exists() and (LLAMA_CPP_DIR / "convert_hf_to_gguf.py").exists():
         return LLAMA_CPP_DIR
     LLAMA_CPP_DIR.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--depth=1", LLAMA_CPP_REPO, str(LLAMA_CPP_DIR)],
-        check=True,
-    )
+    _run(["git", "clone", "--depth=1", LLAMA_CPP_REPO, str(LLAMA_CPP_DIR)])
     return LLAMA_CPP_DIR
 
 
@@ -305,6 +320,7 @@ def fetch_hf_base_model(model_id: str, *, force: bool = False) -> Path:
     """
     target = base_model_dir(model_id)
     if target.exists() and any(target.iterdir()) and not force:
+        log.debug("hf download cache hit model=%s", model_id)
         return target
     try:
         from huggingface_hub import snapshot_download  # type: ignore
@@ -314,7 +330,14 @@ def fetch_hf_base_model(model_id: str, *, force: bool = False) -> Path:
             "pip install thandv[train-mlx]"
         ) from e
     target.mkdir(parents=True, exist_ok=True)
-    snapshot_download(repo_id=model_id, local_dir=str(target))
+    t0 = time.monotonic()
+    log.debug("hf download start model=%s", model_id)
+    try:
+        snapshot_download(repo_id=model_id, local_dir=str(target))
+    except Exception as e:
+        log.debug("hf download end status=error error=%s ms=%d", type(e).__name__, ms_since(t0))
+        raise
+    log.debug("hf download end status=ok model=%s ms=%d", model_id, ms_since(t0))
     return target
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,9 @@ from typing import Callable
 import requests
 
 from thandv import trainer
+from thandv.debug import log as _root_log, ms_since
+
+log = _root_log.getChild("teachers")
 
 
 @dataclass(frozen=True)
@@ -163,19 +167,29 @@ def call_teacher(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    r = requests.post(
-        f"{teacher.base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": teacher.model_id,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    t0 = time.monotonic()
+    log.debug("teacher call start teacher=%s model=%s", teacher.name, teacher.model_id)
+    try:
+        r = requests.post(
+            f"{teacher.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": teacher.model_id,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        log.debug("teacher call end status=error error=%s teacher=%s ms=%d",
+                  type(e).__name__, teacher.name, ms_since(t0))
+        raise
+    log.debug("teacher call end status=ok teacher=%s ms=%d chars=%d",
+              teacher.name, ms_since(t0), len(content or ""))
+    return content
 
 
 # --- Distillation orchestration -----------------------------------------
@@ -220,6 +234,7 @@ def distill(
                 if on_progress:
                     on_progress(i, len(prompts), "ok")
             except Exception as e:
+                log.debug("distill prompt skipped index=%d error=%s", i, type(e).__name__)
                 failures.append({"index": i, "error": f"{type(e).__name__}: {e}"})
                 if on_progress:
                     on_progress(i, len(prompts), f"fail: {type(e).__name__}")
