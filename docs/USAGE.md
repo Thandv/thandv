@@ -15,6 +15,7 @@ model that fits your host, pulls it via Ollama, and installs the `thandv`
 CLI into a venv in the checkout (`./.venv`; Homebrew and Debian Pythons refuse
 `pip install --user`). It links the command as `~/.local/bin/thandv`, or into
 `$THANDV_BIN_DIR` if set, and warns if that directory is not on your `PATH`.
+It replaces an old link there, but stops if a file or directory is in the way.
 The venv records absolute paths: if you move the checkout, re-run `./install.sh`.
 
 ### From source (development)

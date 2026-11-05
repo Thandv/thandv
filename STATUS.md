@@ -8,7 +8,7 @@ v0.10.0, updated 2026-11-05 (epic THV-E2). Keep this file current with each land
   `run_bash`, `write_file` and `edit_file` need a human `y`. Writes are confined
   to the start directory, `run_bash` has a denylist and a process-group timeout,
   and Ctrl-C never approves a tool. These were reviewed over three rounds plus a
-  Ctrl-C injection harness (reports under `~/Claude/foreman-asks/2026-10-20-reports/`).
+  Ctrl-C injection harness.
 - Exit codes of a one-shot `thandv chat "..."`: 0 ok, 1 model error, 2 setup error
   (Ollama down, model missing, bad persona), 130 Ctrl-C. These hold for the `thandv` script, `python -m thandv`
   and the PyInstaller binary (`thandv/__main__.py` exits with `main()`'s status).
@@ -16,7 +16,7 @@ v0.10.0, updated 2026-11-05 (epic THV-E2). Keep this file current with each land
   warning on stderr, and the chat continues without logging.
 - `thandv doctor`, `eval` (smoke suite), `ingest`/`retrieve`, `train status|queue|enqueue|pause|resume|stop`,
   `config`, personas, and opt-in `THANDV_DEBUG=1` logging.
-- Test suite: `pytest -q` runs 693 tests, hermetic (no network, no real `~/.thandv`),
+- Test suite: `pytest -q` runs 698 tests, hermetic (no network, no real `~/.thandv`),
   in about 20–30 s on the owner's Mac. CI (`.github/workflows/ci.yml`) runs ruff and
   pytest on ubuntu-22.04 and macos-15 with Python 3.10–3.12, plus a PyInstaller build smoke.
 
@@ -42,7 +42,7 @@ v0.10.0, updated 2026-11-05 (epic THV-E2). Keep this file current with each land
 
 ## `thandv doctor` (2026-11-05)
 
-This was run from the THV-E2 worktree install (`.venv/bin/thandv doctor`, outside the repo):
+This was run with the venv's `thandv doctor`, from outside the repo:
 
 ```
 OS=Darwin | arch=arm64 | RAM=16GB | backend=Metal | model=qwen2.5-coder:7b
@@ -55,17 +55,16 @@ thandv version: 0.10.0
 
 ## Repairing the launcher after a move
 
-A venv records absolute paths. After the checkout moved from `~/Claude/repos/thandv`
-to `~/Projects/thandv`, `.venv/bin/thandv` failed with `bad interpreter`, and
-`thandv` was not on PATH. Repair (dev install, keeps pytest and ruff for the
-pre-commit hook):
+A venv records absolute paths. After the checkout moved, the venv's `thandv`
+failed with `bad interpreter`, and `thandv` was not on PATH. Repair (dev install,
+keeps pytest and ruff for the pre-commit hook):
 
 ```bash
-cd ~/Projects/thandv
+cd path/to/thandv
 python3.14 -m venv --clear .venv
 .venv/bin/python -m pip install -e '.[dev]'
 mkdir -p ~/.local/bin
-ln -sf ~/Projects/thandv/.venv/bin/thandv ~/.local/bin/thandv
+ln -sfn "$PWD/.venv/bin/thandv" ~/.local/bin/thandv
 thandv doctor
 ```
 

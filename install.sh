@@ -42,13 +42,18 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 BIN_DIR="${THANDV_BIN_DIR:-$HOME/.local/bin}"
+LINK="$BIN_DIR/thandv"
+# Replace an old link (a re-run, a moved checkout), never a file or directory.
+if [[ -e "$LINK" && ! -L "$LINK" ]]; then
+    die "$LINK already exists and is not a symlink. Move it aside and re-run."
+fi
 say "installing thandv from $SCRIPT_DIR into $VENV"
 python3 -m venv "$VENV"
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
 "$VENV/bin/python" -m pip install --quiet -e "$SCRIPT_DIR"
 mkdir -p "$BIN_DIR"
-ln -sf "$VENV/bin/thandv" "$BIN_DIR/thandv"
-say "linked $BIN_DIR/thandv -> $VENV/bin/thandv"
+ln -sfn "$VENV/bin/thandv" "$LINK"
+say "linked $LINK -> $VENV/bin/thandv"
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) warn "$BIN_DIR is not on PATH. Add it: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc" ;;
