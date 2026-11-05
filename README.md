@@ -68,6 +68,7 @@ fine-tuning of open models — without ever sending a token to a paid API.
 git clone git@github.com:Thandv/thandv.git
 cd thandv
 ./install.sh           # installs ollama if missing, pulls the right model, installs `thandv`
+                       # into ./.venv and links it as ~/.local/bin/thandv (must be on PATH)
 thandv doctor          # confirms host, model, ollama status, active persona
 thandv chat            # REPL (uses code persona by default)
 thandv chat --persona writer "draft an outline for a short essay on focus"
@@ -76,6 +77,9 @@ thandv eval            # run the smoke suite against the current model + persona
 thandv eval --list     # show available suites and personas
 thandv train status    # show training daemon + queue + eval-gate state
 ```
+
+If you move the checkout, re-run `./install.sh`: the venv records absolute
+paths, so the old `thandv` stops working (`bad interpreter`).
 
 Debug logs: `THANDV_DEBUG=1 thandv ...` prints `[thandv debug]` lines to stderr
 for model and teacher calls (model, status, duration; never prompts), each

@@ -36,12 +36,26 @@ else
 fi
 
 # --- Thandv CLI -------------------------------------------------------------
+# Into a venv inside the checkout: Homebrew and Debian Pythons refuse
+# `pip install --user` (PEP 668). A venv records absolute paths, so if the
+# checkout moves, re-run this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-say "installing thandv from $SCRIPT_DIR"
-python3 -m pip install --user --upgrade "$SCRIPT_DIR"
+VENV="$SCRIPT_DIR/.venv"
+BIN_DIR="${THANDV_BIN_DIR:-$HOME/.local/bin}"
+say "installing thandv from $SCRIPT_DIR into $VENV"
+python3 -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --upgrade pip
+"$VENV/bin/python" -m pip install --quiet -e "$SCRIPT_DIR"
+mkdir -p "$BIN_DIR"
+ln -sf "$VENV/bin/thandv" "$BIN_DIR/thandv"
+say "linked $BIN_DIR/thandv -> $VENV/bin/thandv"
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) warn "$BIN_DIR is not on PATH. Add it: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc" ;;
+esac
 
 # --- Pick & pull model ------------------------------------------------------
-MODEL="$(python3 -c 'from thandv.runtime import detect_host, pick_model; print(pick_model(detect_host()))')"
+MODEL="$("$VENV/bin/python" -c 'from thandv.runtime import detect_host, pick_model; print(pick_model(detect_host()))')"
 say "selected model: $MODEL"
 
 if ! pgrep -x ollama >/dev/null && ! pgrep -f "ollama serve" >/dev/null; then
