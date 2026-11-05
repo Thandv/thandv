@@ -16,7 +16,7 @@ pip install -e ".[dev,build]"
 ## Running tests
 
 ```bash
-pytest -q                      # full suite (~1.2s, no network)
+pytest -q                      # full suite (~20-30 s on an M-series Mac, no network)
 pytest tests/test_trainer.py   # one file
 pytest -k tool                 # match by name
 pytest -x --pdb                # stop on first failure, drop into pdb
@@ -51,7 +51,7 @@ is wrong for the codebase, edit `pyproject.toml`.
 `main` and on every PR. Matrix:
 
 - `ubuntu-22.04 × py3.10/3.11/3.12` — ruff + pytest
-- `macos-14 × py3.10/3.11/3.12` — ruff + pytest
+- `macos-15 × py3.10/3.11/3.12` — ruff + pytest
 - Build smoke: `bash build.sh && ./dist/thandv --version` on both OSes
 
 Failures block merge. Tests must pass before review.

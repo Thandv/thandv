@@ -92,6 +92,7 @@ nothing.
 | Document | Purpose |
 |---|---|
 | [docs/README.md](docs/README.md) | Index. Start here. |
+| [STATUS.md](STATUS.md) | What works, what is untested, owner-held items, launcher repair. |
 | [docs/USAGE.md](docs/USAGE.md) | End-user guide: every CLI command + config. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map, data flow, key decisions. |
 | [docs/TRAINING.md](docs/TRAINING.md) | Training pipeline + background daemon setup. |
@@ -114,12 +115,13 @@ thandv/                 core Python package
   tools.py              read_file, write_file, edit_file, list_dir, run_bash
   memory.py             skills + memory + session log
   config.py             on-disk config
-skills/                 seed skills loaded by personas (markdown)
+  skills/               seed skills loaded by personas (markdown)
 tests/                  pytest suite (no Ollama needed; all I/O mocked)
 docs/                   user + developer + training docs
 research/               roadmap + self-improvement notes
 cpp/                    native-build design note only (no C++ code yet)
 scripts/                launchd plist, systemd unit, distill/eval stubs
+STATUS.md               current state: tested, untested, owner-held
 NOT_FINANCIAL_ADVICE.md plain-language statement of the finance persona's scope
 install.sh              one-line installer
 build.sh                PyInstaller single-file binary build
