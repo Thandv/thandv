@@ -68,6 +68,7 @@ fine-tuning of open models — without ever sending a token to a paid API.
 git clone git@github.com:Thandv/thandv.git
 cd thandv
 ./install.sh           # installs ollama if missing, pulls the right model, installs `thandv`
+                       # into ./.venv and links it as ~/.local/bin/thandv (must be on PATH)
 thandv doctor          # confirms host, model, ollama status, active persona
 thandv chat            # REPL (uses code persona by default)
 thandv chat --persona writer "draft an outline for a short essay on focus"
@@ -76,6 +77,9 @@ thandv eval            # run the smoke suite against the current model + persona
 thandv eval --list     # show available suites and personas
 thandv train status    # show training daemon + queue + eval-gate state
 ```
+
+If you move the checkout, re-run `./install.sh`: the venv records absolute
+paths, so the old `thandv` stops working (`bad interpreter`).
 
 Debug logs: `THANDV_DEBUG=1 thandv ...` prints `[thandv debug]` lines to stderr
 for model and teacher calls (model, status, duration; never prompts), each
@@ -88,6 +92,7 @@ nothing.
 | Document | Purpose |
 |---|---|
 | [docs/README.md](docs/README.md) | Index. Start here. |
+| [STATUS.md](STATUS.md) | What works, what is untested, owner-held items, launcher repair. |
 | [docs/USAGE.md](docs/USAGE.md) | End-user guide: every CLI command + config. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map, data flow, key decisions. |
 | [docs/TRAINING.md](docs/TRAINING.md) | Training pipeline + background daemon setup. |
@@ -110,12 +115,13 @@ thandv/                 core Python package
   tools.py              read_file, write_file, edit_file, list_dir, run_bash
   memory.py             skills + memory + session log
   config.py             on-disk config
-skills/                 seed skills loaded by personas (markdown)
+  skills/               seed skills loaded by personas (markdown)
 tests/                  pytest suite (no Ollama needed; all I/O mocked)
 docs/                   user + developer + training docs
 research/               roadmap + self-improvement notes
 cpp/                    native-build design note only (no C++ code yet)
 scripts/                launchd plist, systemd unit, distill/eval stubs
+STATUS.md               current state: tested, untested, owner-held
 NOT_FINANCIAL_ADVICE.md plain-language statement of the finance persona's scope
 install.sh              one-line installer
 build.sh                PyInstaller single-file binary build

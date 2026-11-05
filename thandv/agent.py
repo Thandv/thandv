@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -79,6 +80,7 @@ class Agent:
         # Side-channel populated by _raw_stream when the model emits
         # native (OpenAI-style) tool_calls. Drained and reset per hop.
         self._pending_tool_calls: list[dict] = []
+        self._log_warned = False
         if not self.messages:
             system = self.persona.system_prompt
             skills = load_skills(only=self.persona.skills)
@@ -88,6 +90,18 @@ class Agent:
             if memory:
                 system += "\n\n## Memory\n" + memory
             self.messages.append({"role": "system", "content": system})
+
+    def _log_event(self, event: dict) -> None:
+        """Append to the session log; a failed write (disk full, permissions)
+        warns once on stderr and the turn carries on without logging."""
+        try:
+            append_event(self.session_path, event)
+        except OSError as e:
+            log.debug("session log write failed error=%s", e)
+            if not self._log_warned:
+                self._log_warned = True
+                print(f"warning: could not write the session log ({e}); continuing without it",
+                      file=sys.stderr)
 
     # --- Ollama streaming I/O ----------------------------------------------
 
@@ -280,7 +294,7 @@ class Agent:
         progress = _TurnProgress()
         try:
             self.messages.append({"role": "user", "content": user_input})
-            append_event(self.session_path, {"role": "user", "content": user_input})
+            self._log_event({"role": "user", "content": user_input})
             yield from self._hops(progress)
         except (KeyboardInterrupt, GeneratorExit):
             # Ctrl-C inside the turn, or the caller closing it mid-stream.
@@ -304,8 +318,8 @@ class Agent:
             name = progress.call["name"]
             error = INTERRUPTED_RUNNING if progress.dispatching else INTERRUPTED_NOT_RUN
             self.messages.append({"role": "tool", "name": name, "content": json.dumps({"error": error})})
-            append_event(self.session_path, {"role": "tool", "name": name, "result": {"error": error}})
-        append_event(self.session_path, {"role": "interrupted", "partial": progress.partial})
+            self._log_event({"role": "tool", "name": name, "result": {"error": error}})
+        self._log_event({"role": "interrupted", "partial": progress.partial})
 
     def _hops(self, progress: _TurnProgress) -> Iterator[str]:
         hold = len(TOOL_OPEN_MARKER) - 1  # bytes to keep buffered for marker detection
@@ -385,7 +399,7 @@ class Agent:
                     {"function": {"name": call["name"], "arguments": dict(call["args"])}}
                 ]
             self.messages.append(assistant_msg)
-            append_event(self.session_path, {"role": "assistant", "content": full})
+            self._log_event({"role": "assistant", "content": full})
             progress.partial = ""
 
             if call is None:
@@ -423,7 +437,7 @@ class Agent:
                 result = dispatch(call["name"], call["args"], root=self.root)
                 log.debug("tool end name=%s status=%s ms=%d", call["name"],
                           "error" if "error" in result else "ok", ms_since(t0))
-            append_event(self.session_path, {"role": "tool", "name": call["name"], "result": result})
+            self._log_event({"role": "tool", "name": call["name"], "result": result})
             # Native function-calling expects role="tool" with the result
             # as plain content. This is the OpenAI / Ollama contract and
             # makes the model treat the next turn as a continuation rather
